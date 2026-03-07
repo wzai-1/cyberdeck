@@ -1,6 +1,8 @@
-import { Application, Graphics, Text, TextStyle } from 'pixi.js';
+import { Application, Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { GlowFilter } from '@pixi/filter-glow';
 import type { Card, GameState } from '../game/state';
+
+// ---- Types -----------------------------------------------------------------
 
 interface Animation {
   elapsed: number;
@@ -13,479 +15,1057 @@ interface Handlers {
   onCardClick: (cardId: string, position: { x: number; y: number }) => void;
   onEndTurn: () => void;
   onPlayAgain: () => void;
+  onSelectCardReward: (cardId: string | null) => void;
 }
+
+// ---- Constants -------------------------------------------------------------
+
+const CARD_W = 140;
+const CARD_H = 190;
+const CARD_SPACING = 152;
+
+// ---- GameRenderer ----------------------------------------------------------
 
 export class GameRenderer {
   private app: Application;
   private handlers: Handlers;
+
+  private rootContainer: Container;
   private background: Graphics;
   private uiLayer: Graphics;
-  private effectsLayer: Graphics;
+  private effectsLayer: Container;
+
   private animations: Animation[] = [];
   private lastState: GameState | null = null;
+  private pulseTime = 0;
+
+  // Persistent per-frame effects
+  private chargeRing: Graphics | null = null;
+
+  // Cache layout coords so animations can target them
+  private deckX = 0;
+  private deckY = 0;
+  private discardX = 0;
+  private discardY = 0;
 
   constructor(app: Application, handlers: Handlers) {
     this.app = app;
     this.handlers = handlers;
 
+    this.rootContainer = new Container();
     this.background = new Graphics();
     this.uiLayer = new Graphics();
-    this.effectsLayer = new Graphics();
+    this.effectsLayer = new Container();
 
-    this.app.stage.addChild(this.background);
-    this.app.stage.addChild(this.uiLayer);
-    this.app.stage.addChild(this.effectsLayer);
+    this.rootContainer.addChild(this.background);
+    this.rootContainer.addChild(this.uiLayer);
+    this.rootContainer.addChild(this.effectsLayer);
+    this.app.stage.addChild(this.rootContainer);
+    this.rootContainer.visible = false;
 
     this.app.ticker.add((delta) => {
-      const deltaSeconds = delta / 60;
-      this.updateAnimations(deltaSeconds);
+      const dt = delta / 60;
+      this.pulseTime += dt;
+      this.updateAnimations(dt);
+      this.updateChargeEffect();
     });
   }
 
+  show(): void { this.rootContainer.visible = true; }
+  hide(): void { this.rootContainer.visible = false; }
+
+  // ---- Public API ----------------------------------------------------------
+
   render(state: GameState): void {
-    const width = this.app.screen.width;
-    const height = this.app.screen.height;
+    const w = this.app.screen.width;
+    const h = this.app.screen.height;
 
-    this.drawBackground(width, height);
-
+    this.drawBackground(w, h);
     this.uiLayer.removeChildren();
     this.uiLayer.clear();
 
-    if (this.lastState) {
-      this.handleDamageEffects(this.lastState, state, width, height);
+    // Remove charge ring on each render; ticker recreates if still charging
+    if (this.chargeRing) {
+      this.effectsLayer.removeChild(this.chargeRing);
+      this.chargeRing = null;
     }
 
+    if (this.lastState) {
+      this.handleStateTransitions(this.lastState, state, w, h);
+    }
     this.lastState = state;
 
+    // Cache pile positions for animations
+    this.deckX = w - 52;
+    this.deckY = h - 52;
+    this.discardX = 52;
+    this.discardY = h - 52;
+
     if (state.phase === 'win' || state.phase === 'lose') {
-      this.renderEndScreen(state, width, height);
+      this.renderEndScreen(state, w, h);
+      return;
+    }
+    if (state.phase === 'card_reward') {
+      this.renderCardReward(state, w, h);
       return;
     }
 
-    this.renderEnemy(state, width, height);
-    this.renderPlayer(state, width, height);
-    this.renderHand(state, width, height);
-    this.renderEndTurnButton(state, width, height);
-    this.renderCombatLog(state, width, height);
+    this.renderEnemy(state, w, h);
+    this.renderPlayer(state, w, h);
+    this.renderHand(state, w, h);
+    this.renderEndTurnButton(state, w, h);
+    this.renderCombatLog(state, w, h);
+    this.renderPiles(state, w, h);
   }
 
+  /** Animate card flying from hand to center then vanishing. */
   animateCardPlay(card: Card, position: { x: number; y: number }, onDone: () => void): void {
     const cardView = this.createCardGraphic(card, true);
-    const targetX = this.app.screen.width * 0.5 - cardView.width * 0.5;
-    const targetY = this.app.screen.height * 0.45 - cardView.height * 0.5;
-    cardView.x = position.x - cardView.width * 0.5;
-    cardView.y = position.y - cardView.height * 0.5;
+    const targetX = this.app.screen.width * 0.5;
+    const targetY = this.app.screen.height * 0.45;
+    const startX = position.x;
+    const startY = position.y;
+    cardView.pivot.set(CARD_W * 0.5, CARD_H * 0.5);
+    cardView.x = startX;
+    cardView.y = startY;
     this.effectsLayer.addChild(cardView);
 
-    this.addAnimation(0.25, (progress) => {
-      cardView.x = position.x - cardView.width * 0.5 + (targetX - (position.x - cardView.width * 0.5)) * progress;
-      cardView.y = position.y - cardView.height * 0.5 + (targetY - (position.y - cardView.height * 0.5)) * progress;
-      cardView.alpha = 1 - progress * 0.2;
+    this.addAnimation(0.28, (p) => {
+      const e = easeOutCubic(p);
+      cardView.x = startX + (targetX - startX) * e;
+      cardView.y = startY + (targetY - startY) * e;
+      cardView.scale.set(1 + p * 0.2);
+      cardView.alpha = p < 0.7 ? 1 : 1 - (p - 0.7) / 0.3;
     }, () => {
       this.effectsLayer.removeChild(cardView);
+      this.spawnCardFlash(targetX, targetY);
       onDone();
     });
   }
 
-  private addAnimation(duration: number, update: (progress: number) => void, complete?: () => void): void {
+  /** Animate card-backs flying from deck pile to hand area (visual only). */
+  animateDrawCards(count: number): void {
+    const w = this.app.screen.width;
+    const h = this.app.screen.height;
+    const fromX = this.deckX || w - 52;
+    const fromY = this.deckY || h - 52;
+    const handBaseY = h * 0.72 + CARD_H * 0.5;
+    const handCenterX = w * 0.5;
+
+    const n = Math.min(count, 7);
+    for (let i = 0; i < n; i++) {
+      const delay = i * 0.06;
+      const dur = delay + 0.32;
+      const targetX = handCenterX + (i - (n - 1) * 0.5) * CARD_SPACING;
+      const targetY = handBaseY;
+
+      const back = this.createCardBack();
+      back.pivot.set(CARD_W * 0.5, CARD_H * 0.5);
+      back.x = fromX;
+      back.y = fromY;
+      back.scale.set(0.28);
+      back.alpha = 0;
+      this.effectsLayer.addChild(back);
+
+      this.addAnimation(dur, (prog) => {
+        const local = Math.max(0, (prog * dur - delay) / 0.32);
+        const p = Math.min(1, local);
+        const e = easeOutCubic(p);
+        back.x = fromX + (targetX - fromX) * e;
+        back.y = fromY + (targetY - fromY) * e;
+        back.scale.set(0.28 + 0.72 * e);
+        back.alpha = p < 0.85 ? 0.85 : 0.85 * (1 - (p - 0.85) / 0.15);
+      }, () => {
+        this.effectsLayer.removeChild(back);
+      });
+    }
+  }
+
+  // ---- Private rendering ---------------------------------------------------
+
+  private renderEnemy(state: GameState, w: number, h: number): void {
+    const ex = w * 0.68;
+    const ey = h * 0.27;
+
+    const isCharging = state.enemy.intent === 'charge';
+    const boxColor = isCharging ? 0xff4400 : 0xff0066;
+
+    const box = new Graphics();
+    box.beginFill(0x110011, 0.92);
+    box.lineStyle(3, boxColor, 1);
+    box.drawRoundedRect(-115, -75, 230, 150, 12);
+    box.endFill();
+    box.x = ex;
+    box.y = ey;
+    box.filters = [new GlowFilter({ color: boxColor, distance: 16, outerStrength: isCharging ? 3 : 1.8, quality: 0.5 })];
+    this.uiLayer.addChild(box);
+
+    const nameText = new Text(state.enemy.type, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 17,
+      fill: boxColor,
+      fontWeight: 'bold',
+    }));
+    nameText.anchor.set(0.5, 0.5);
+    nameText.x = ex;
+    nameText.y = ey - 56;
+    this.uiLayer.addChild(nameText);
+
+    this.drawHpBar(ex - 85, ey + 28, 170, 12, state.enemy.hp, state.enemy.maxHp, 0xff0066);
+
+    if (state.enemy.shield > 0) {
+      this.drawShieldBadge(ex + 90, ey + 30, state.enemy.shield, 0xff66aa);
+    }
+
+    this.drawIntent(state, ex, ey - 100);
+
+    // Status effects on enemy
+    this.drawStatusEffects(state.enemy.statusEffects, ex - 85, ey - 30);
+  }
+
+  private renderPlayer(state: GameState, w: number, h: number): void {
+    const px = w * 0.3;
+    const py = h * 0.27;
+
+    const box = new Graphics();
+    box.beginFill(0x001118, 0.92);
+    box.lineStyle(3, 0x00ffcc, 1);
+    box.drawRoundedRect(-115, -75, 230, 150, 12);
+    box.endFill();
+    box.x = px;
+    box.y = py;
+    box.filters = [new GlowFilter({ color: 0x00ffcc, distance: 16, outerStrength: 1.8, quality: 0.5 })];
+    this.uiLayer.addChild(box);
+
+    const nameText = new Text('RUNNER', new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 17,
+      fill: 0x00ffcc,
+      fontWeight: 'bold',
+    }));
+    nameText.anchor.set(0.5, 0.5);
+    nameText.x = px;
+    nameText.y = py - 56;
+    this.uiLayer.addChild(nameText);
+
+    this.drawHpBar(px - 85, py + 28, 170, 12, state.player.hp, state.player.maxHp, 0x00ffcc);
+
+    if (state.player.shield > 0) {
+      this.drawShieldBadge(px - 90, py + 30, state.player.shield, 0x66ffee);
+    }
+
+    const manaText = new Text(`\u25C6 ${state.player.mana} / ${state.player.maxMana}`, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 15,
+      fill: 0xffaa00,
+      fontWeight: 'bold',
+    }));
+    manaText.anchor.set(0.5, 0.5);
+    manaText.x = px;
+    manaText.y = py + 58;
+    this.uiLayer.addChild(manaText);
+
+    // Status effects on player
+    this.drawStatusEffects(state.player.statusEffects, px - 85, py - 30);
+
+    // Neural link charges
+    if (state.player.neuralLinkCharges > 0) {
+      const nlText = new Text(`NEURAL\u00D7${state.player.neuralLinkCharges}`, new TextStyle({
+        fontFamily: 'Courier New',
+        fontSize: 11,
+        fill: 0xaa44ff,
+      }));
+      nlText.x = px + 50;
+      nlText.y = py - 30;
+      this.uiLayer.addChild(nlText);
+    }
+  }
+
+  private renderHand(state: GameState, w: number, h: number): void {
+    const totalCards = state.hand.length;
+    if (totalCards === 0) return;
+
+    const fanSpread = Math.min(22, totalCards * 3.5);
+    const spacing = Math.min(CARD_SPACING, (w * 0.72) / Math.max(totalCards, 1));
+    const totalW = (totalCards - 1) * spacing;
+    const baseCenterX = w * 0.5;
+    const baseY = h * 0.72;
+
+    state.hand.forEach((card, i) => {
+      const t = totalCards > 1 ? i / (totalCards - 1) : 0.5;
+      const tCen = t - 0.5; // -0.5 to +0.5
+      const angleDeg = tCen * fanSpread;
+      const angleRad = angleDeg * (Math.PI / 180);
+      const yArc = tCen * tCen * 28; // arc drop at edges
+
+      const cx = baseCenterX - totalW * 0.5 + i * spacing + CARD_W * 0.5;
+      const cy = baseY + yArc + CARD_H * 0.5;
+
+      const cardView = this.createCardGraphic(card, false);
+      cardView.pivot.set(CARD_W * 0.5, CARD_H * 0.5);
+      cardView.x = cx;
+      cardView.y = cy;
+      cardView.rotation = angleRad;
+      cardView.zIndex = i;
+
+      const origY = cy;
+      const origRot = angleRad;
+
+      cardView.eventMode = 'static';
+      cardView.cursor = 'pointer';
+
+      cardView.on('pointerover', () => {
+        cardView.scale.set(1.15);
+        cardView.y = origY - 32;
+        cardView.rotation = 0;
+        cardView.zIndex = 100;
+        cardView.filters = [new GlowFilter({ color: 0x00ffcc, distance: 28, outerStrength: 4, quality: 0.5 })];
+      });
+      cardView.on('pointerout', () => {
+        cardView.scale.set(1.0);
+        cardView.y = origY;
+        cardView.rotation = origRot;
+        cardView.zIndex = i;
+        cardView.filters = [new GlowFilter({ color: 0x00ffcc, distance: 12, outerStrength: 1.8, quality: 0.4 })];
+      });
+      cardView.on('pointerdown', () => {
+        const bounds = cardView.getBounds();
+        this.handlers.onCardClick(card.id, {
+          x: bounds.x + bounds.width * 0.5,
+          y: bounds.y + bounds.height * 0.5,
+        });
+      });
+
+      this.uiLayer.addChild(cardView);
+    });
+
+    // Enable z-sorting so hovered card shows on top
+    this.uiLayer.sortableChildren = true;
+  }
+
+  private renderEndTurnButton(state: GameState, w: number, h: number): void {
+    const active = state.phase === 'player_turn';
+    const color = active ? 0xffaa00 : 0x444444;
+
+    const btn = new Graphics();
+    btn.beginFill(0x111122, 1);
+    btn.lineStyle(3, color, 1);
+    btn.drawRoundedRect(0, 0, 158, 50, 10);
+    btn.endFill();
+    btn.x = w - 192;
+    btn.y = h * 0.82;
+    btn.filters = [new GlowFilter({ color, distance: 12, outerStrength: active ? 2 : 0.5, quality: 0.4 })];
+
+    if (active) {
+      btn.eventMode = 'static';
+      btn.cursor = 'pointer';
+      btn.on('pointerdown', () => this.handlers.onEndTurn());
+      btn.on('pointerover', () => btn.scale.set(1.05));
+      btn.on('pointerout', () => btn.scale.set(1.0));
+    }
+
+    const label = new Text('END TURN', new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 15,
+      fill: color,
+      fontWeight: 'bold',
+    }));
+    label.anchor.set(0.5, 0.5);
+    label.x = btn.x + 79;
+    label.y = btn.y + 25;
+
+    this.uiLayer.addChild(btn);
+    this.uiLayer.addChild(label);
+
+    // Turn counter
+    const turnText = new Text(`TURN ${state.turn}`, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 11,
+      fill: 0x335566,
+    }));
+    turnText.anchor.set(0.5, 0);
+    turnText.x = btn.x + 79;
+    turnText.y = btn.y + 54;
+    this.uiLayer.addChild(turnText);
+  }
+
+  private renderCombatLog(state: GameState, _w: number, h: number): void {
+    const entries = state.combatLog.slice(-5);
+    entries.forEach((entry, idx) => {
+      const text = new Text(entry, new TextStyle({
+        fontFamily: 'Courier New',
+        fontSize: 11,
+        fill: 0x55bbcc,
+      }));
+      text.alpha = 0.35 + (idx / (entries.length - 1 || 1)) * 0.65;
+      text.x = 22;
+      text.y = h * 0.56 + idx * 17;
+      this.uiLayer.addChild(text);
+    });
+  }
+
+  private renderPiles(state: GameState, _w: number, _h: number): void {
+    const deckCount = state.deck.length;
+    const discardCount = state.discard.length;
+
+    // Deck pile (bottom right)
+    this.drawPileStack(this.deckX, this.deckY, deckCount, 0x005577, 'DECK');
+
+    // Discard pile (bottom left)
+    this.drawPileStack(this.discardX, this.discardY, discardCount, 0x553300, 'DISC');
+  }
+
+  private drawPileStack(cx: number, cy: number, count: number, color: number, label: string): void {
+    // Draw 3 stacked card backs
+    const stackAmt = Math.min(count, 3);
+    for (let i = stackAmt - 1; i >= 0; i--) {
+      const back = new Graphics();
+      back.beginFill(0x050a14);
+      back.lineStyle(1.5, color, 0.5 - i * 0.12);
+      back.drawRoundedRect(-24 + i * 2, -34 + i * 2, 48, 68, 5);
+      back.endFill();
+      back.x = cx;
+      back.y = cy;
+      this.uiLayer.addChild(back);
+    }
+
+    // Count
+    const countText = new Text(`${count}`, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 13,
+      fill: color,
+      fontWeight: 'bold',
+    }));
+    countText.anchor.set(0.5, 0.5);
+    countText.x = cx;
+    countText.y = cy;
+    this.uiLayer.addChild(countText);
+
+    // Label
+    const lbl = new Text(label, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 9,
+      fill: color,
+    }));
+    lbl.alpha = 0.7;
+    lbl.anchor.set(0.5, 0);
+    lbl.x = cx;
+    lbl.y = cy + 38;
+    this.uiLayer.addChild(lbl);
+  }
+
+  private renderEndScreen(state: GameState, w: number, h: number): void {
+    const isWin = state.phase === 'win';
+    const title = isWin ? 'RUN COMPLETE' : 'SYSTEM FAILURE';
+    const color = isWin ? 0x00ffcc : 0xff0066;
+
+    if (isWin) {
+      this.spawnVictoryParticles(w * 0.5, h * 0.4);
+    }
+
+    const overlay = new Graphics();
+    overlay.beginFill(0x050508, 0.88);
+    overlay.drawRect(0, 0, w, h);
+    overlay.endFill();
+    this.uiLayer.addChild(overlay);
+
+    const titleText = new Text(title, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 44,
+      fill: color,
+      fontWeight: 'bold',
+    }));
+    titleText.anchor.set(0.5, 0.5);
+    titleText.x = w * 0.5;
+    titleText.y = h * 0.38;
+    titleText.filters = [new GlowFilter({ color, distance: 22, outerStrength: 3, quality: 0.5 })];
+    this.uiLayer.addChild(titleText);
+
+    const sub = new Text(isWin ? 'NEURAL NETWORK COMPROMISED' : 'CONNECTION TERMINATED', new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 15,
+      fill: color,
+    }));
+    sub.alpha = 0.65;
+    sub.anchor.set(0.5, 0.5);
+    sub.x = w * 0.5;
+    sub.y = h * 0.46;
+    this.uiLayer.addChild(sub);
+
+    const btn = new Graphics();
+    btn.beginFill(0x111122, 1);
+    btn.lineStyle(3, color, 1);
+    btn.drawRoundedRect(0, 0, 200, 56, 12);
+    btn.endFill();
+    btn.x = w * 0.5 - 100;
+    btn.y = h * 0.54;
+    btn.filters = [new GlowFilter({ color, distance: 15, outerStrength: 2, quality: 0.4 })];
+    btn.eventMode = 'static';
+    btn.cursor = 'pointer';
+    btn.on('pointerdown', () => this.handlers.onPlayAgain());
+    btn.on('pointerover', () => btn.scale.set(1.05));
+    btn.on('pointerout', () => btn.scale.set(1.0));
+
+    const label = new Text('[ NEW RUN ]', new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 18,
+      fill: color,
+      fontWeight: 'bold',
+    }));
+    label.anchor.set(0.5, 0.5);
+    label.x = btn.x + 100;
+    label.y = btn.y + 28;
+
+    this.uiLayer.addChild(btn);
+    this.uiLayer.addChild(label);
+  }
+
+  private renderCardReward(state: GameState, w: number, h: number): void {
+    const overlay = new Graphics();
+    overlay.beginFill(0x050508, 0.92);
+    overlay.drawRect(0, 0, w, h);
+    overlay.endFill();
+    this.uiLayer.addChild(overlay);
+
+    const title = new Text('CHOOSE UPGRADE', new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 28,
+      fill: 0x00ffcc,
+      fontWeight: 'bold',
+    }));
+    title.anchor.set(0.5, 0.5);
+    title.x = w * 0.5;
+    title.y = h * 0.2;
+    title.filters = [new GlowFilter({ color: 0x00ffcc, distance: 18, outerStrength: 2.5, quality: 0.4 })];
+    this.uiLayer.addChild(title);
+
+    const choices = state.cardReward?.choices ?? [];
+    const totalW = choices.length * CARD_W + (choices.length - 1) * 30;
+    let cx = w * 0.5 - totalW * 0.5;
+    const cy = h * 0.36;
+
+    choices.forEach((card) => {
+      const cardView = this.createCardGraphic(card, false);
+      cardView.x = cx;
+      cardView.y = cy;
+      cardView.eventMode = 'static';
+      cardView.cursor = 'pointer';
+      cardView.on('pointerover', () => {
+        cardView.scale.set(1.1);
+        cardView.y = cy - 20;
+      });
+      cardView.on('pointerout', () => {
+        cardView.scale.set(1.0);
+        cardView.y = cy;
+      });
+      cardView.on('pointerdown', () => {
+        this.handlers.onSelectCardReward(card.id);
+      });
+      this.uiLayer.addChild(cardView);
+      cx += CARD_W + 30;
+    });
+
+    // Skip button
+    const skipBtn = new Graphics();
+    skipBtn.beginFill(0x111122, 1);
+    skipBtn.lineStyle(2, 0x556677, 0.8);
+    skipBtn.drawRoundedRect(0, 0, 150, 44, 10);
+    skipBtn.endFill();
+    skipBtn.x = w * 0.5 - 75;
+    skipBtn.y = h * 0.8;
+    skipBtn.eventMode = 'static';
+    skipBtn.cursor = 'pointer';
+    skipBtn.on('pointerdown', () => this.handlers.onSelectCardReward(null));
+    skipBtn.on('pointerover', () => skipBtn.alpha = 0.7);
+    skipBtn.on('pointerout', () => skipBtn.alpha = 1.0);
+    this.uiLayer.addChild(skipBtn);
+
+    const skipLabel = new Text('[ SKIP ]', new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 14,
+      fill: 0x556677,
+    }));
+    skipLabel.anchor.set(0.5, 0.5);
+    skipLabel.x = skipBtn.x + 75;
+    skipLabel.y = skipBtn.y + 22;
+    this.uiLayer.addChild(skipLabel);
+  }
+
+  // ---- Helpers: layout elements --------------------------------------------
+
+  private drawHpBar(x: number, y: number, bw: number, bh: number, hp: number, maxHp: number, color: number): void {
+    const ratio = Math.max(0, Math.min(1, hp / maxHp));
+
+    const bg = new Graphics();
+    bg.beginFill(0x0a0b14);
+    bg.drawRoundedRect(x, y, bw, bh, 4);
+    bg.endFill();
+    this.uiLayer.addChild(bg);
+
+    if (ratio > 0) {
+      const fill = new Graphics();
+      fill.beginFill(color);
+      fill.drawRoundedRect(x, y, bw * ratio, bh, 4);
+      fill.endFill();
+      fill.filters = [new GlowFilter({ color, distance: 8, outerStrength: 1.5, quality: 0.3 })];
+      this.uiLayer.addChild(fill);
+    }
+
+    const txt = new Text(`${hp}/${maxHp}`, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 11,
+      fill: color,
+      fontWeight: 'bold',
+    }));
+    txt.x = x + bw + 7;
+    txt.y = y - 1;
+    this.uiLayer.addChild(txt);
+  }
+
+  private drawShieldBadge(x: number, y: number, shield: number, color: number): void {
+    const txt = new Text(`\u25A0 ${shield}`, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 12,
+      fill: color,
+    }));
+    txt.anchor.set(0.5, 0.5);
+    txt.x = x;
+    txt.y = y;
+    this.uiLayer.addChild(txt);
+  }
+
+  private drawIntent(state: GameState, x: number, y: number): void {
+    const { intent, intentValue } = state.enemy;
+    const color = intent === 'attack' ? 0xff0066 : intent === 'charge' ? 0xff4400 : 0x00ffcc;
+
+    const ic = new Graphics();
+    ic.x = x;
+    ic.y = y;
+
+    if (intent === 'attack') {
+      ic.lineStyle(3, color, 1);
+      ic.moveTo(-10, 12);
+      ic.lineTo(0, -12);
+      ic.lineTo(10, 12);
+      ic.moveTo(0, -12);
+      ic.lineTo(0, 14);
+    } else if (intent === 'charge') {
+      ic.lineStyle(3, color, 1);
+      for (let t = 0; t < 3; t++) {
+        ic.moveTo(-8 + t * 8, -12);
+        ic.lineTo(-2 + t * 8, 0);
+        ic.lineTo(-8 + t * 8, 12);
+      }
+    } else {
+      ic.lineStyle(3, color, 1);
+      ic.beginFill(0x0a1a22, 0.8);
+      ic.drawRoundedRect(-14, -14, 28, 32, 6);
+      ic.endFill();
+    }
+
+    const valText = new Text(
+      intent === 'charge' ? 'CHARGING' : `${intentValue}`,
+      new TextStyle({
+        fontFamily: 'Courier New',
+        fontSize: intent === 'charge' ? 10 : 12,
+        fill: color,
+        fontWeight: 'bold',
+      })
+    );
+    valText.anchor.set(0.5, 0.5);
+    valText.x = 0;
+    valText.y = 30;
+    ic.addChild(valText);
+
+    this.uiLayer.addChild(ic);
+  }
+
+  private drawStatusEffects(effects: GameState['player']['statusEffects'], x: number, y: number): void {
+    if (effects.length === 0) return;
+    const colors: Record<string, number> = { vulnerable: 0xff4400, strength: 0xff8800, weak: 0x8844ff };
+    effects.forEach((e, i) => {
+      const txt = new Text(`${e.type.substring(0, 4).toUpperCase()}${e.type !== 'strength' ? `(${e.value})` : ''}`, new TextStyle({
+        fontFamily: 'Courier New',
+        fontSize: 9,
+        fill: colors[e.type] ?? 0xaaaaaa,
+      }));
+      txt.x = x + i * 48;
+      txt.y = y;
+      this.uiLayer.addChild(txt);
+    });
+  }
+
+  // ---- Card graphics -------------------------------------------------------
+
+  private createCardGraphic(card: Card, isGhost: boolean): Graphics {
+    const rarityColors: Record<string, number> = {
+      common: 0x00ffcc,
+      rare: 0xaa44ff,
+      legendary: 0xffaa00,
+    };
+    const borderColor = rarityColors[card.rarity] ?? 0x00ffcc;
+
+    const g = new Graphics();
+    g.beginFill(0x090e1a, isGhost ? 0.88 : 1);
+    g.lineStyle(2.5, borderColor, 1);
+    g.drawRoundedRect(0, 0, CARD_W, CARD_H, 12);
+    g.endFill();
+
+    // Card type stripe
+    const stripeColor = card.type === 'attack' ? 0x220011 : 0x001122;
+    g.beginFill(stripeColor, 0.7);
+    g.drawRoundedRect(4, 4, CARD_W - 8, 28, 6);
+    g.endFill();
+
+    // Circuit pattern on card body
+    g.lineStyle(1, borderColor, 0.07);
+    for (let row = 0; row < 3; row++) {
+      g.moveTo(10, 82 + row * 22);
+      g.lineTo(50 + row * 15, 82 + row * 22);
+      g.moveTo(60 + row * 15, 82 + row * 22);
+      g.lineTo(CARD_W - 10, 82 + row * 22);
+    }
+
+    g.filters = [new GlowFilter({ color: borderColor, distance: 10, outerStrength: 1.5, quality: 0.35 })];
+
+    const nameText = new Text(card.name, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 13,
+      fill: borderColor,
+      fontWeight: 'bold',
+    }));
+    nameText.x = 9;
+    nameText.y = 9;
+    g.addChild(nameText);
+
+    // Cost circle
+    const costBg = new Graphics();
+    costBg.beginFill(0x060c14, 0.95);
+    costBg.lineStyle(2, 0xffaa00, 0.9);
+    costBg.drawCircle(0, 0, 13);
+    costBg.endFill();
+    costBg.x = CARD_W - 17;
+    costBg.y = 17;
+    g.addChild(costBg);
+
+    const costText = new Text(`${card.cost}`, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 13,
+      fill: 0xffaa00,
+      fontWeight: 'bold',
+    }));
+    costText.anchor.set(0.5, 0.5);
+    costText.x = CARD_W - 17;
+    costText.y = 17;
+    g.addChild(costText);
+
+    // Type tag
+    const typeTag = new Text(card.type.toUpperCase(), new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 9,
+      fill: card.type === 'attack' ? 0xff6688 : 0x44ccff,
+    }));
+    typeTag.alpha = 0.8;
+    typeTag.x = 9;
+    typeTag.y = 36;
+    g.addChild(typeTag);
+
+    // Separator
+    const sep = new Graphics();
+    sep.lineStyle(1, borderColor, 0.25);
+    sep.moveTo(8, 50);
+    sep.lineTo(CARD_W - 8, 50);
+    g.addChild(sep);
+
+    // Description
+    const desc = new Text(card.description, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 11,
+      fill: 0xaaddee,
+      wordWrap: true,
+      wordWrapWidth: CARD_W - 20,
+    }));
+    desc.x = 9;
+    desc.y = 57;
+    g.addChild(desc);
+
+    if (card.exhaust) {
+      const exhaustText = new Text('EXHAUST', new TextStyle({
+        fontFamily: 'Courier New',
+        fontSize: 9,
+        fill: 0xff4444,
+      }));
+      exhaustText.alpha = 0.8;
+      exhaustText.anchor.set(0.5, 1);
+      exhaustText.x = CARD_W * 0.5;
+      exhaustText.y = CARD_H - 8;
+      g.addChild(exhaustText);
+    }
+
+    return g;
+  }
+
+  private createCardBack(): Graphics {
+    const g = new Graphics();
+
+    // Background
+    g.beginFill(0x040810);
+    g.lineStyle(2, 0x005577, 0.9);
+    g.drawRoundedRect(0, 0, CARD_W, CARD_H, 12);
+    g.endFill();
+
+    // Circuit board lines
+    g.lineStyle(1, 0x003344, 0.7);
+    // Horizontal traces
+    for (let row = 0; row < 5; row++) {
+      const y = 30 + row * 30;
+      g.moveTo(12, y);
+      g.lineTo(40 + (row % 2) * 20, y);
+      g.moveTo(55 + (row % 2) * 20, y);
+      g.lineTo(CARD_W - 12, y);
+    }
+    // Vertical traces
+    for (let col = 0; col < 3; col++) {
+      const x = 30 + col * 35;
+      g.moveTo(x, 15);
+      g.lineTo(x, 55 + col * 15);
+      g.moveTo(x, 70 + col * 15);
+      g.lineTo(x, CARD_H - 20);
+    }
+
+    // Junction dots
+    g.lineStyle(0);
+    g.beginFill(0x00aacc, 0.7);
+    const dots = [[40, 30], [75, 60], [55, 90], [90, 45], [30, 120], [100, 130]];
+    for (const [dx, dy] of dots) {
+      g.drawCircle(dx, dy, 3);
+    }
+    g.endFill();
+
+    // Center logo / symbol
+    g.lineStyle(2, 0x00aacc, 0.45);
+    g.drawCircle(CARD_W * 0.5, CARD_H * 0.5, 22);
+    g.moveTo(CARD_W * 0.5 - 12, CARD_H * 0.5);
+    g.lineTo(CARD_W * 0.5 + 12, CARD_H * 0.5);
+    g.moveTo(CARD_W * 0.5, CARD_H * 0.5 - 12);
+    g.lineTo(CARD_W * 0.5, CARD_H * 0.5 + 12);
+
+    return g;
+  }
+
+  // ---- Effects / Animations ------------------------------------------------
+
+  private handleStateTransitions(prev: GameState, next: GameState, w: number, h: number): void {
+    const ex = w * 0.68;
+    const ey = h * 0.27;
+    const px = w * 0.3;
+    const py = h * 0.27;
+
+    // Enemy took damage
+    if (next.enemy.hp < prev.enemy.hp) {
+      const amount = prev.enemy.hp - next.enemy.hp;
+      this.spawnFloatNumber(ex, ey - 85, amount, 0xff2244, '-');
+      this.flashTarget(ex, ey, 0xff0000, 110, 75);
+      if (amount > 10) this.screenShake(9, 0.3);
+    }
+
+    // Enemy shield reduced (without HP drop)
+    if (next.enemy.shield < prev.enemy.shield && next.enemy.hp === prev.enemy.hp) {
+      const blocked = prev.enemy.shield - next.enemy.shield;
+      this.spawnFloatNumber(ex + 35, ey - 65, blocked, 0x4488ff, '-');
+    }
+
+    // Player took damage
+    if (next.player.hp < prev.player.hp) {
+      const amount = prev.player.hp - next.player.hp;
+      this.spawnFloatNumber(px, py - 85, amount, 0xff4466, '-');
+      this.flashTarget(px, py, 0x880022, 110, 75);
+      if (amount > 10) this.screenShake(7, 0.25);
+    }
+
+    // Player healed
+    if (next.player.hp > prev.player.hp) {
+      const healed = next.player.hp - prev.player.hp;
+      this.spawnFloatNumber(px, py - 85, healed, 0x00ff88, '+');
+    }
+
+    // Player gained shield
+    if (next.player.shield > prev.player.shield) {
+      const gained = next.player.shield - prev.player.shield;
+      this.spawnFloatNumber(px - 40, py - 65, gained, 0x66ddff, '+');
+    }
+
+    // Victory
+    if (next.phase === 'card_reward' && prev.phase !== 'card_reward') {
+      this.spawnVictoryParticles(w * 0.5, h * 0.4);
+    }
+  }
+
+  private spawnFloatNumber(x: number, y: number, amount: number, color: number, prefix = ''): void {
+    const fontSize = amount > 15 ? 28 : amount > 8 ? 22 : 18;
+    const text = new Text(`${prefix}${amount}`, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize,
+      fill: color,
+      fontWeight: 'bold',
+    }));
+    text.anchor.set(0.5, 0.5);
+    text.x = x + (Math.random() - 0.5) * 24;
+    text.y = y;
+    text.filters = [new GlowFilter({ color, distance: 10, outerStrength: 2, quality: 0.4 })];
+    this.effectsLayer.addChild(text);
+
+    const startY = text.y;
+    this.addAnimation(0.7, (p) => {
+      text.y = startY - p * 50;
+      text.alpha = p < 0.5 ? 1 : 1 - (p - 0.5) * 2;
+      text.scale.set(1 + p * 0.3);
+    }, () => {
+      this.effectsLayer.removeChild(text);
+    });
+  }
+
+  private flashTarget(cx: number, cy: number, color: number, hw: number, hh: number): void {
+    const flash = new Graphics();
+    flash.beginFill(color, 0.6);
+    flash.drawRoundedRect(cx - hw, cy - hh, hw * 2, hh * 2, 12);
+    flash.endFill();
+    this.effectsLayer.addChild(flash);
+
+    this.addAnimation(0.22, (p) => {
+      flash.alpha = 0.6 * (1 - p);
+    }, () => {
+      this.effectsLayer.removeChild(flash);
+    });
+  }
+
+  private screenShake(intensity: number, duration: number): void {
+    this.addAnimation(duration, (p) => {
+      const decay = 1 - p;
+      this.app.stage.x = (Math.random() * 2 - 1) * intensity * decay;
+      this.app.stage.y = (Math.random() * 2 - 1) * intensity * decay;
+    }, () => {
+      this.app.stage.x = 0;
+      this.app.stage.y = 0;
+    });
+  }
+
+  private spawnCardFlash(x: number, y: number): void {
+    const flash = new Graphics();
+    flash.beginFill(0x00ffcc, 0.35);
+    flash.drawCircle(x, y, 60);
+    flash.endFill();
+    flash.filters = [new GlowFilter({ color: 0x00ffcc, distance: 30, outerStrength: 3, quality: 0.4 })];
+    this.effectsLayer.addChild(flash);
+
+    this.addAnimation(0.3, (p) => {
+      flash.alpha = 1 - p;
+      flash.scale.set(1 + p * 0.6);
+    }, () => {
+      this.effectsLayer.removeChild(flash);
+    });
+  }
+
+  private spawnVictoryParticles(x: number, y: number): void {
+    const count = 32;
+    for (let i = 0; i < count; i++) {
+      const particle = new Graphics();
+      const size = 3 + Math.random() * 5;
+      const hue = Math.random() < 0.6 ? 0x00ff88 : 0x00ffcc;
+      particle.beginFill(hue, 0.9);
+      particle.drawCircle(0, 0, size);
+      particle.endFill();
+      particle.filters = [new GlowFilter({ color: hue, distance: 10, outerStrength: 2.5, quality: 0.3 })];
+
+      const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.4;
+      const speed = 120 + Math.random() * 200;
+      const vx = Math.cos(angle) * speed;
+      const vy = Math.sin(angle) * speed;
+      particle.x = x;
+      particle.y = y;
+      this.effectsLayer.addChild(particle);
+
+      const dur = 0.7 + Math.random() * 0.5;
+      const sx = x;
+      const sy = y;
+      this.addAnimation(dur, (p) => {
+        particle.x = sx + vx * p;
+        particle.y = sy + vy * p + 40 * p * p; // slight gravity
+        particle.alpha = p < 0.6 ? 1 : 1 - (p - 0.6) / 0.4;
+        particle.scale.set(1 - p * 0.4);
+      }, () => {
+        this.effectsLayer.removeChild(particle);
+      });
+    }
+  }
+
+  private updateChargeEffect(): void {
+    const w = this.app.screen.width;
+    const h = this.app.screen.height;
+    const ex = w * 0.68;
+    const ey = h * 0.27;
+
+    if (this.lastState?.enemy.intent === 'charge') {
+      if (!this.chargeRing) {
+        this.chargeRing = new Graphics();
+        this.chargeRing.lineStyle(4, 0xff4400, 0.75);
+        this.chargeRing.drawCircle(ex, ey, 80);
+        this.chargeRing.filters = [new GlowFilter({ color: 0xff4400, distance: 28, outerStrength: 2, quality: 0.4 })];
+        this.effectsLayer.addChild(this.chargeRing);
+      }
+      const pulse = 1.5 + Math.sin(this.pulseTime * 5) * 1.5;
+      (this.chargeRing.filters![0] as GlowFilter).outerStrength = pulse;
+      this.chargeRing.alpha = 0.6 + Math.sin(this.pulseTime * 5) * 0.3;
+    } else {
+      if (this.chargeRing) {
+        this.effectsLayer.removeChild(this.chargeRing);
+        this.chargeRing = null;
+      }
+    }
+  }
+
+  // ---- Animation engine ----------------------------------------------------
+
+  private addAnimation(duration: number, update: (p: number) => void, complete?: () => void): void {
     this.animations.push({ elapsed: 0, duration, update, complete });
   }
 
-  private updateAnimations(deltaSeconds: number): void {
-    if (this.animations.length === 0) return;
-    this.animations = this.animations.filter((animation) => {
-      animation.elapsed += deltaSeconds;
-      const progress = Math.min(1, animation.elapsed / animation.duration);
-      animation.update(progress);
-      if (progress >= 1) {
-        if (animation.complete) animation.complete();
+  private updateAnimations(dt: number): void {
+    this.animations = this.animations.filter((anim) => {
+      anim.elapsed += dt;
+      const p = Math.min(1, anim.elapsed / anim.duration);
+      anim.update(p);
+      if (p >= 1) {
+        if (anim.complete) anim.complete();
         return false;
       }
       return true;
     });
   }
 
-  private drawBackground(width: number, height: number): void {
+  // ---- Background ----------------------------------------------------------
+
+  private drawBackground(w: number, h: number): void {
     this.background.clear();
     this.background.beginFill(0x0a0a0f);
-    this.background.drawRect(0, 0, width, height);
+    this.background.drawRect(0, 0, w, h);
     this.background.endFill();
 
-    this.background.lineStyle(1, 0x1a1a2e, 0.6);
+    this.background.lineStyle(1, 0x14142a, 0.55);
     const gridSize = 48;
-    for (let x = 0; x <= width; x += gridSize) {
+    for (let x = 0; x <= w; x += gridSize) {
       this.background.moveTo(x, 0);
-      this.background.lineTo(x, height);
+      this.background.lineTo(x, h);
     }
-    for (let y = 0; y <= height; y += gridSize) {
+    for (let y = 0; y <= h; y += gridSize) {
       this.background.moveTo(0, y);
-      this.background.lineTo(width, y);
+      this.background.lineTo(w, y);
     }
   }
+}
 
-  private renderEnemy(state: GameState, width: number, height: number): void {
-    const enemyX = width * 0.7;
-    const enemyY = height * 0.25;
-    const enemyBox = new Graphics();
-    enemyBox.beginFill(0x110011, 0.9);
-    enemyBox.lineStyle(3, 0xff0066, 1);
-    enemyBox.drawRoundedRect(-110, -70, 220, 140, 12);
-    enemyBox.endFill();
-    enemyBox.x = enemyX;
-    enemyBox.y = enemyY;
-    enemyBox.filters = [new GlowFilter({ color: 0xff0066, distance: 15, outerStrength: 2, innerStrength: 0.5 })];
-    this.uiLayer.addChild(enemyBox);
+// ---- Easing ----------------------------------------------------------------
 
-    const nameStyle = new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 18,
-      fill: 0xff0066,
-      fontWeight: 'bold'
-    });
-    const nameText = new Text('VIRUS.EXE', nameStyle);
-    nameText.anchor.set(0.5, 0.5);
-    nameText.x = enemyX;
-    nameText.y = enemyY - 50;
-    this.uiLayer.addChild(nameText);
-
-    this.drawHpBar(enemyX - 80, enemyY + 30, 160, 12, state.enemy.hp, state.enemy.maxHp, 0xff0066);
-    this.drawShieldText(enemyX + 80, enemyY + 30, state.enemy.shield, 0xff66aa);
-
-    this.drawIntent(state, enemyX, enemyY - 95);
-  }
-
-  private renderPlayer(state: GameState, width: number, height: number): void {
-    const playerX = width * 0.3;
-    const playerY = height * 0.25;
-
-    const playerBox = new Graphics();
-    playerBox.beginFill(0x001118, 0.9);
-    playerBox.lineStyle(3, 0x00ffcc, 1);
-    playerBox.drawRoundedRect(-110, -70, 220, 140, 12);
-    playerBox.endFill();
-    playerBox.x = playerX;
-    playerBox.y = playerY;
-    playerBox.filters = [new GlowFilter({ color: 0x00ffcc, distance: 15, outerStrength: 2, innerStrength: 0.5 })];
-    this.uiLayer.addChild(playerBox);
-
-    const nameStyle = new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 18,
-      fill: 0x00ffcc,
-      fontWeight: 'bold'
-    });
-    const nameText = new Text('RUNNER', nameStyle);
-    nameText.anchor.set(0.5, 0.5);
-    nameText.x = playerX;
-    nameText.y = playerY - 50;
-    this.uiLayer.addChild(nameText);
-
-    this.drawHpBar(playerX - 80, playerY + 30, 160, 12, state.player.hp, state.player.maxHp, 0x00ffcc);
-    this.drawShieldText(playerX + 80, playerY + 30, state.player.shield, 0x66ffee);
-
-    const manaStyle = new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 16,
-      fill: 0xffaa00,
-      fontWeight: 'bold'
-    });
-    const manaText = new Text(`MANA ${state.player.mana}/${state.player.maxMana}`, manaStyle);
-    manaText.anchor.set(0.5, 0.5);
-    manaText.x = playerX;
-    manaText.y = playerY + 60;
-    this.uiLayer.addChild(manaText);
-  }
-
-  private renderHand(state: GameState, width: number, height: number): void {
-    const baseY = height * 0.7;
-    const totalWidth = state.hand.length * 140 + Math.max(0, state.hand.length - 1) * 20;
-    let startX = width * 0.5 - totalWidth * 0.5;
-
-    state.hand.forEach((card) => {
-      const cardView = this.createCardGraphic(card, false);
-      cardView.x = startX;
-      cardView.y = baseY;
-      cardView.eventMode = 'static';
-      cardView.cursor = 'pointer';
-      cardView.on('pointerover', () => {
-        cardView.scale.set(1.1);
-        cardView.filters = [new GlowFilter({ color: 0x00ffcc, distance: 20, outerStrength: 3 })];
-      });
-      cardView.on('pointerout', () => {
-        cardView.scale.set(1);
-        cardView.filters = [new GlowFilter({ color: 0x00ffcc, distance: 12, outerStrength: 2 })];
-      });
-      cardView.on('pointerdown', () => {
-        const bounds = cardView.getBounds();
-        this.handlers.onCardClick(card.id, {
-          x: bounds.x + bounds.width * 0.5,
-          y: bounds.y + bounds.height * 0.5
-        });
-      });
-      this.uiLayer.addChild(cardView);
-      startX += 160;
-    });
-  }
-
-  private renderEndTurnButton(state: GameState, width: number, height: number): void {
-    const button = new Graphics();
-    button.beginFill(0x111122, 1);
-    button.lineStyle(3, 0xffaa00, 1);
-    button.drawRoundedRect(0, 0, 160, 52, 10);
-    button.endFill();
-    button.filters = [new GlowFilter({ color: 0xffaa00, distance: 12, outerStrength: 2 })];
-    button.x = width - 200;
-    button.y = height * 0.82;
-    button.eventMode = 'static';
-    button.cursor = 'pointer';
-    button.on('pointerdown', () => {
-      if (state.phase === 'player_turn') {
-        this.handlers.onEndTurn();
-      }
-    });
-    button.on('pointerover', () => {
-      button.scale.set(1.05);
-    });
-    button.on('pointerout', () => {
-      button.scale.set(1);
-    });
-
-    const label = new Text('END TURN', new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 16,
-      fill: 0xffaa00,
-      fontWeight: 'bold'
-    }));
-    label.anchor.set(0.5, 0.5);
-    label.x = button.x + 80;
-    label.y = button.y + 26;
-
-    this.uiLayer.addChild(button);
-    this.uiLayer.addChild(label);
-  }
-
-  private renderCombatLog(state: GameState, width: number, height: number): void {
-    const logX = 30;
-    const logY = height * 0.55;
-    const entries = state.combatLog.slice(-4);
-    const logStyle = new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 12,
-      fill: 0x8affff
-    });
-    entries.forEach((entry, index) => {
-      const text = new Text(entry, logStyle);
-      text.x = logX;
-      text.y = logY + index * 18;
-      this.uiLayer.addChild(text);
-    });
-  }
-
-  private renderEndScreen(state: GameState, width: number, height: number): void {
-    const overlay = new Graphics();
-    overlay.beginFill(0x050508, 0.85);
-    overlay.drawRect(0, 0, width, height);
-    overlay.endFill();
-    this.uiLayer.addChild(overlay);
-
-    const title = state.phase === 'win' ? 'SYSTEM OVERRIDE' : 'SYSTEM FAILURE';
-    const color = state.phase === 'win' ? 0x00ffcc : 0xff0066;
-    const titleText = new Text(title, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 42,
-      fill: color,
-      fontWeight: 'bold'
-    }));
-    titleText.anchor.set(0.5, 0.5);
-    titleText.x = width * 0.5;
-    titleText.y = height * 0.4;
-    titleText.filters = [new GlowFilter({ color, distance: 20, outerStrength: 3 })];
-    this.uiLayer.addChild(titleText);
-
-    const button = new Graphics();
-    button.beginFill(0x111122, 1);
-    button.lineStyle(3, color, 1);
-    button.drawRoundedRect(0, 0, 200, 56, 12);
-    button.endFill();
-    button.x = width * 0.5 - 100;
-    button.y = height * 0.55;
-    button.eventMode = 'static';
-    button.cursor = 'pointer';
-    button.filters = [new GlowFilter({ color, distance: 15, outerStrength: 2 })];
-    button.on('pointerdown', () => this.handlers.onPlayAgain());
-
-    const label = new Text('PLAY AGAIN', new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 18,
-      fill: color,
-      fontWeight: 'bold'
-    }));
-    label.anchor.set(0.5, 0.5);
-    label.x = button.x + 100;
-    label.y = button.y + 28;
-
-    this.uiLayer.addChild(button);
-    this.uiLayer.addChild(label);
-  }
-
-  private drawHpBar(x: number, y: number, width: number, height: number, hp: number, maxHp: number, color: number): void {
-    const ratio = Math.max(0, Math.min(1, hp / maxHp));
-    const bar = new Graphics();
-    bar.beginFill(0x0b0b14);
-    bar.drawRoundedRect(x, y, width, height, 4);
-    bar.endFill();
-
-    const fill = new Graphics();
-    fill.beginFill(color);
-    fill.drawRoundedRect(x, y, width * ratio, height, 4);
-    fill.endFill();
-    fill.filters = [new GlowFilter({ color, distance: 10, outerStrength: 2 })];
-
-    const text = new Text(`${hp}/${maxHp}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 12,
-      fill: color,
-      fontWeight: 'bold'
-    }));
-    text.x = x + width + 8;
-    text.y = y - 2;
-
-    this.uiLayer.addChild(bar);
-    this.uiLayer.addChild(fill);
-    this.uiLayer.addChild(text);
-  }
-
-  private drawShieldText(x: number, y: number, shield: number, color: number): void {
-    const text = new Text(`SHIELD ${shield}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 12,
-      fill: color
-    }));
-    text.anchor.set(1, 0.5);
-    text.x = x;
-    text.y = y;
-    this.uiLayer.addChild(text);
-  }
-
-  private drawIntent(state: GameState, x: number, y: number): void {
-    const intentContainer = new Graphics();
-    intentContainer.x = x;
-    intentContainer.y = y;
-
-    if (state.enemy.intent === 'attack') {
-      intentContainer.lineStyle(3, 0xff0066, 1);
-      intentContainer.moveTo(-10, 10);
-      intentContainer.lineTo(0, -12);
-      intentContainer.lineTo(10, 10);
-      intentContainer.moveTo(0, -12);
-      intentContainer.lineTo(0, 12);
-    } else {
-      intentContainer.lineStyle(3, 0x00ffcc, 1);
-      intentContainer.beginFill(0x112233, 1);
-      intentContainer.drawRoundedRect(-14, -12, 28, 32, 6);
-      intentContainer.endFill();
-    }
-
-    const valueText = new Text(`${state.enemy.intentValue}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 12,
-      fill: state.enemy.intent === 'attack' ? 0xff0066 : 0x00ffcc
-    }));
-    valueText.anchor.set(0.5, 0.5);
-    valueText.x = 0;
-    valueText.y = 28;
-    intentContainer.addChild(valueText);
-
-    this.uiLayer.addChild(intentContainer);
-  }
-
-  private createCardGraphic(card: Card, isGhost: boolean): Graphics {
-    const cardWidth = 140;
-    const cardHeight = 190;
-    const cardView = new Graphics();
-    cardView.beginFill(0x111122, isGhost ? 0.9 : 1);
-    cardView.lineStyle(3, 0x00ffcc, 1);
-    cardView.drawRoundedRect(0, 0, cardWidth, cardHeight, 12);
-    cardView.endFill();
-    cardView.filters = [new GlowFilter({ color: 0x00ffcc, distance: 12, outerStrength: 2 })];
-
-    const nameText = new Text(card.name, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 16,
-      fill: 0x00ffcc,
-      fontWeight: 'bold'
-    }));
-    nameText.x = 12;
-    nameText.y = 12;
-
-    const costText = new Text(`${card.cost}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 18,
-      fill: 0xffaa00,
-      fontWeight: 'bold'
-    }));
-    costText.x = cardWidth - 26;
-    costText.y = 10;
-
-    const descriptionText = new Text(card.description, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 12,
-      fill: 0xbfffff,
-      wordWrap: true,
-      wordWrapWidth: cardWidth - 24
-    }));
-    descriptionText.x = 12;
-    descriptionText.y = 60;
-
-    cardView.addChild(nameText, costText, descriptionText);
-
-    return cardView;
-  }
-
-  private handleDamageEffects(prev: GameState, next: GameState, width: number, height: number): void {
-    if (next.enemy.hp < prev.enemy.hp) {
-      const amount = prev.enemy.hp - next.enemy.hp;
-      this.spawnDamageNumber(width * 0.7, height * 0.25 - 80, amount, 0xff0066);
-      this.flashScreen(0xff0066);
-    }
-    if (next.player.hp < prev.player.hp) {
-      const amount = prev.player.hp - next.player.hp;
-      this.spawnDamageNumber(width * 0.3, height * 0.25 - 80, amount, 0x00ffcc);
-      this.flashScreen(0x00ffcc);
-    }
-  }
-
-  private spawnDamageNumber(x: number, y: number, amount: number, color: number): void {
-    const text = new Text(`-${amount}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 22,
-      fill: color,
-      fontWeight: 'bold'
-    }));
-    text.anchor.set(0.5, 0.5);
-    text.x = x;
-    text.y = y;
-    this.effectsLayer.addChild(text);
-
-    this.addAnimation(0.6, (progress) => {
-      text.y = y - progress * 40;
-      text.alpha = 1 - progress;
-    }, () => {
-      this.effectsLayer.removeChild(text);
-    });
-  }
-
-  private flashScreen(color: number): void {
-    const flash = new Graphics();
-    flash.beginFill(color, 0.2);
-    flash.drawRect(0, 0, this.app.screen.width, this.app.screen.height);
-    flash.endFill();
-    this.effectsLayer.addChild(flash);
-
-    this.addAnimation(0.3, (progress) => {
-      flash.alpha = 0.2 * (1 - progress);
-    }, () => {
-      this.effectsLayer.removeChild(flash);
-    });
-  }
+function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
 }

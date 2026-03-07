@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createStarterDeck, getCardEffect, generateCardReward, dealDamageToEnemy } from '../game/cards';
 import { createInitialState, type GameState } from '../game/state';
-import { startPlayerTurn, playCard } from '../game/combat';
+import { playCard } from '../game/combat';
 
 describe('cards', () => {
   it('creates a starter deck with strikes and blocks', () => {

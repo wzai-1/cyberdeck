@@ -36,7 +36,7 @@ export interface CardReward {
 }
 
 export interface GameState {
-  phase: 'player_turn' | 'enemy_turn' | 'win' | 'lose' | 'card_reward';
+  phase: 'player_turn' | 'enemy_turn' | 'win' | 'lose' | 'card_reward' | 'map' | 'shop';
   turn: number;
   player: {
     hp: number;
@@ -46,7 +46,9 @@ export interface GameState {
     maxMana: number;
     statusEffects: StatusEffect[];
     neuralLinkCharges: number;
+    gold: number;
   };
+  shopInventory?: Card[];
   enemy: {
     hp: number;
     maxHp: number;
@@ -117,7 +119,8 @@ export function createInitialState(): GameState {
       mana: 3,
       maxMana: 3,
       statusEffects: [],
-      neuralLinkCharges: 0
+      neuralLinkCharges: 0,
+      gold: 100
     },
     enemy: {
       hp: 50,
