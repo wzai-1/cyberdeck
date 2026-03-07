@@ -19,11 +19,32 @@ export function dealDamageToEnemy(state: GameState, baseDamage: number): GameSta
     newNeuralLink -= 1;
   }
 
+  // Ghost class passive: first attack each turn deals ×2
+  let firstAttack = state.firstAttackThisTurn;
+  if (state.playerClass === 'GHOST' && firstAttack) {
+    finalDmg *= 2;
+    firstAttack = false;
+  }
+
+  // Overclock Core relic: every 10th card played deals ×2
+  let overclockDouble = state.overclockDouble;
+  if (overclockDouble) {
+    finalDmg *= 2;
+    overclockDouble = false;
+  }
+
+  // Berserker Mode relic: when HP < 50%, +3 damage
+  if (state.relics.includes('berserker_mode') && state.player.hp < state.player.maxHp * 0.5) {
+    finalDmg += 3;
+  }
+
   const result = applyDamage(state.enemy.hp, finalDmg, state.enemy.shield);
   return {
     ...state,
     enemy: { ...state.enemy, hp: result.hp, shield: result.shield },
-    player: { ...state.player, neuralLinkCharges: newNeuralLink }
+    player: { ...state.player, neuralLinkCharges: newNeuralLink },
+    firstAttackThisTurn: firstAttack,
+    overclockDouble
   };
 }
 
@@ -221,7 +242,7 @@ export function getCardEffect(card: Card): CardEffect | null {
   return CARD_EFFECTS[card.name] ?? null;
 }
 
-// ---- Card effective cost (for ZeroDay and zeroCostTurn) -------------------
+// ---- Card effective cost --------------------------------------------------
 
 export function getEffectiveCost(card: Card, state: GameState): number {
   if (state.zeroCostTurn) return 0;
@@ -237,32 +258,39 @@ export function getEffectiveCost(card: Card, state: GameState): number {
 type CardTemplate = Omit<Card, 'id'>;
 
 const ALL_CARD_TEMPLATES: CardTemplate[] = [
-  { name: 'STRIKE',       cost: 1, type: 'attack', rarity: 'common',    description: 'DEAL 6 DAMAGE.' },
-  { name: 'BLOCK',        cost: 1, type: 'skill',  rarity: 'common',    description: 'GAIN 5 SHIELD.' },
-  { name: 'HACK',         cost: 1, type: 'attack', rarity: 'common',    description: 'DEAL 8 DAMAGE.' },
-  { name: 'FIREWALL',     cost: 1, type: 'skill',  rarity: 'common',    description: 'GAIN 8 SHIELD.' },
-  { name: 'OVERCLOCK',    cost: 1, type: 'skill',  rarity: 'common',    description: 'DRAW 2 CARDS.' },
-  { name: 'GLITCH',       cost: 1, type: 'attack', rarity: 'common',    description: 'DEAL 4 DAMAGE. APPLY VULNERABLE 1 TURN.' },
-  { name: 'REBOOT',       cost: 1, type: 'skill',  rarity: 'common',    description: 'HEAL 6 HP.' },
-  { name: 'DOUBLE_TAP',   cost: 2, type: 'attack', rarity: 'common',    description: 'DEAL 6 DAMAGE TWICE.' },
-  { name: 'IRON_WALL',    cost: 2, type: 'skill',  rarity: 'common',    description: 'GAIN 15 SHIELD.' },
-  { name: 'DATA_MINE',    cost: 0, type: 'attack', rarity: 'common',    description: 'DRAW 1. DEAL 3 DAMAGE.' },
-  { name: 'SURGE',        cost: 1, type: 'attack', rarity: 'common',    description: 'DEAL 5 DAMAGE. GAIN 3 SHIELD.' },
-  { name: 'PATCH',        cost: 1, type: 'skill',  rarity: 'common',    description: 'CLEANSE DEBUFFS. HEAL 4 HP.' },
-  { name: 'NEURAL_LINK',  cost: 2, type: 'skill',  rarity: 'rare',      description: 'NEXT 3 ATTACKS DEAL DOUBLE DAMAGE.' },
-  { name: 'ZERO_DAY',     cost: 2, type: 'attack', rarity: 'rare',      description: 'DEAL 15 DAMAGE. FREE IF ENEMY VULNERABLE.' },
-  { name: 'GHOST_PROTOCOL', cost: 2, type: 'skill', rarity: 'rare',     description: 'GAIN 20 SHIELD. DRAW 1.' },
-  { name: 'CASCADE',      cost: 3, type: 'attack', rarity: 'rare',      description: 'DEAL 6 DAMAGE THREE TIMES.' },
-  { name: 'MEMORY_LEAK',  cost: 1, type: 'skill',  rarity: 'rare',      description: 'REMOVE 8 ENEMY SHIELD. DRAW 2.' },
-  { name: 'SYSTEM_CRASH', cost: 3, type: 'attack', rarity: 'rare',      description: 'DEAL 25 DAMAGE.' },
-  { name: 'KILL_SWITCH',  cost: 2, type: 'attack', rarity: 'rare',      description: 'DEAL DAMAGE EQUAL TO ENEMY SHIELD.' },
-  { name: 'GOD_MODE',     cost: 3, type: 'attack', rarity: 'legendary', description: 'DEAL 15 DMG. GAIN 30 SHIELD. DRAW 2.' },
-  { name: 'OVERCLOCK_MAX', cost: 0, type: 'skill', rarity: 'legendary', description: 'ALL CARDS COST 0 THIS TURN. EXHAUST.', exhaust: true },
-  { name: 'SINGULARITY',  cost: 3, type: 'attack', rarity: 'legendary', description: 'DEAL 40 DAMAGE. GAIN 20 HP IF KILLS.' }
+  { name: 'STRIKE',        cost: 1, type: 'attack', rarity: 'common',    description: 'DEAL 6 DAMAGE.' },
+  { name: 'BLOCK',         cost: 1, type: 'skill',  rarity: 'common',    description: 'GAIN 5 SHIELD.' },
+  { name: 'HACK',          cost: 1, type: 'attack', rarity: 'common',    description: 'DEAL 8 DAMAGE.' },
+  { name: 'FIREWALL',      cost: 1, type: 'skill',  rarity: 'common',    description: 'GAIN 8 SHIELD.' },
+  { name: 'OVERCLOCK',     cost: 1, type: 'skill',  rarity: 'common',    description: 'DRAW 2 CARDS.' },
+  { name: 'GLITCH',        cost: 1, type: 'attack', rarity: 'common',    description: 'DEAL 4 DAMAGE. APPLY VULNERABLE 1 TURN.' },
+  { name: 'REBOOT',        cost: 1, type: 'skill',  rarity: 'common',    description: 'HEAL 6 HP.' },
+  { name: 'DOUBLE_TAP',    cost: 2, type: 'attack', rarity: 'common',    description: 'DEAL 6 DAMAGE TWICE.' },
+  { name: 'IRON_WALL',     cost: 2, type: 'skill',  rarity: 'common',    description: 'GAIN 15 SHIELD.' },
+  { name: 'DATA_MINE',     cost: 0, type: 'attack', rarity: 'common',    description: 'DRAW 1. DEAL 3 DAMAGE.' },
+  { name: 'SURGE',         cost: 1, type: 'attack', rarity: 'common',    description: 'DEAL 5 DAMAGE. GAIN 3 SHIELD.' },
+  { name: 'PATCH',         cost: 1, type: 'skill',  rarity: 'common',    description: 'CLEANSE DEBUFFS. HEAL 4 HP.' },
+  { name: 'NEURAL_LINK',   cost: 2, type: 'skill',  rarity: 'rare',      description: 'NEXT 3 ATTACKS DEAL DOUBLE DAMAGE.' },
+  { name: 'ZERO_DAY',      cost: 2, type: 'attack', rarity: 'rare',      description: 'DEAL 15 DAMAGE. FREE IF ENEMY VULNERABLE.' },
+  { name: 'GHOST_PROTOCOL', cost: 2, type: 'skill', rarity: 'rare',      description: 'GAIN 20 SHIELD. DRAW 1.' },
+  { name: 'CASCADE',       cost: 3, type: 'attack', rarity: 'rare',      description: 'DEAL 6 DAMAGE THREE TIMES.' },
+  { name: 'MEMORY_LEAK',   cost: 1, type: 'skill',  rarity: 'rare',      description: 'REMOVE 8 ENEMY SHIELD. DRAW 2.' },
+  { name: 'SYSTEM_CRASH',  cost: 3, type: 'attack', rarity: 'rare',      description: 'DEAL 25 DAMAGE.' },
+  { name: 'KILL_SWITCH',   cost: 2, type: 'attack', rarity: 'rare',      description: 'DEAL DAMAGE EQUAL TO ENEMY SHIELD.' },
+  { name: 'GOD_MODE',      cost: 3, type: 'attack', rarity: 'legendary', description: 'DEAL 15 DMG. GAIN 30 SHIELD. DRAW 2.' },
+  { name: 'OVERCLOCK_MAX', cost: 0, type: 'skill',  rarity: 'legendary', description: 'ALL CARDS COST 0 THIS TURN. EXHAUST.', exhaust: true },
+  { name: 'SINGULARITY',   cost: 3, type: 'attack', rarity: 'legendary', description: 'DEAL 40 DAMAGE. GAIN 20 HP IF KILLS.' }
 ];
 
 function createCardInstance(template: CardTemplate, id: string): Card {
   return { ...template, id };
+}
+
+/** Create a card by template name. Throws if name not found. */
+export function createCardByName(name: string, id: string): Card {
+  const template = ALL_CARD_TEMPLATES.find((t) => t.name === name);
+  if (!template) throw new Error(`Card template not found: ${name}`);
+  return createCardInstance(template, id);
 }
 
 export function createStarterDeck(): Card[] {

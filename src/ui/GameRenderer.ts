@@ -1,6 +1,9 @@
 import { Application, Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { GlowFilter } from '@pixi/filter-glow';
 import type { Card, GameState } from '../game/state';
+import { BOSS_TYPES } from '../game/enemies';
+import { getRelicById } from '../game/relics';
+import { getMostUsedCard, getRunDuration } from '../game/runStats';
 
 // ---- Types -----------------------------------------------------------------
 
@@ -110,8 +113,15 @@ export class GameRenderer {
       return;
     }
 
-    this.renderEnemy(state, w, h);
+    // Boss bar at very top (always visible in boss fight)
+    const isBoss = BOSS_TYPES.includes(state.enemy.type);
+    if (isBoss) {
+      this.renderBossBar(state, w, h);
+    }
+
+    this.renderEnemy(state, w, h, isBoss);
     this.renderPlayer(state, w, h);
+    this.renderRelics(state, w, h);
     this.renderHand(state, w, h);
     this.renderEndTurnButton(state, w, h);
     this.renderCombatLog(state, w, h);
@@ -183,12 +193,81 @@ export class GameRenderer {
 
   // ---- Private rendering ---------------------------------------------------
 
-  private renderEnemy(state: GameState, w: number, h: number): void {
+  private renderBossBar(state: GameState, w: number, h: number): void {
+    const bh = 36;
+    const bx = 0;
+    const by = 0;
+    const bossColor = 0xff0044;
+    const phase = state.bossPhase;
+    const phaseColors: Record<number, number> = { 1: 0xff0044, 2: 0xff4400, 3: 0xff0000 };
+    const barColor = phaseColors[phase] ?? bossColor;
+
+    // Dramatic background strip
+    const strip = new Graphics();
+    strip.beginFill(0x11000a, 0.98);
+    strip.lineStyle(2, barColor, 0.8);
+    strip.drawRect(bx, by, w, bh);
+    strip.endFill();
+    strip.filters = [new GlowFilter({ color: barColor, distance: 18, outerStrength: 2.5, quality: 0.4 })];
+    this.uiLayer.addChild(strip);
+
+    // HP fill
+    const ratio = Math.max(0, state.enemy.hp / state.enemy.maxHp);
+    if (ratio > 0) {
+      const fill = new Graphics();
+      fill.beginFill(barColor, 0.85);
+      fill.drawRect(bx + 2, by + 2, (w - 4) * ratio, bh - 4);
+      fill.endFill();
+      fill.filters = [new GlowFilter({ color: barColor, distance: 10, outerStrength: 2, quality: 0.3 })];
+      this.uiLayer.addChild(fill);
+    }
+
+    // Boss name
+    const nameText = new Text(`⚡ ${state.enemy.type.replace('_', ' ')} ⚡`, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 14,
+      fill: 0xffffff,
+      fontWeight: 'bold'
+    }));
+    nameText.anchor.set(0.5, 0.5);
+    nameText.x = w * 0.5;
+    nameText.y = by + bh * 0.5;
+    this.uiLayer.addChild(nameText);
+
+    // HP label
+    const hpLabel = new Text(`${state.enemy.hp} / ${state.enemy.maxHp}`, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 12,
+      fill: 0xffffff,
+      fontWeight: 'bold'
+    }));
+    hpLabel.anchor.set(1, 0.5);
+    hpLabel.x = w - 12;
+    hpLabel.y = by + bh * 0.5;
+    this.uiLayer.addChild(hpLabel);
+
+    // Phase badge
+    const phaseText = new Text(`PHASE ${phase}`, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 11,
+      fill: barColor,
+      fontWeight: 'bold'
+    }));
+    phaseText.x = 12;
+    phaseText.anchor.set(0, 0.5);
+    phaseText.y = by + bh * 0.5;
+    phaseText.filters = [new GlowFilter({ color: barColor, distance: 8, outerStrength: 2, quality: 0.3 })];
+    this.uiLayer.addChild(phaseText);
+  }
+
+  private renderEnemy(state: GameState, w: number, h: number, isBoss: boolean): void {
     const ex = w * 0.68;
-    const ey = h * 0.27;
+    const ey = isBoss ? h * 0.32 : h * 0.27; // shift down slightly for boss to avoid overlap with boss bar
 
     const isCharging = state.enemy.intent === 'charge';
-    const boxColor = isCharging ? 0xff4400 : 0xff0066;
+    const isDebuff = state.enemy.intent === 'debuff';
+    const isSteal = state.enemy.intent === 'steal';
+    const boxColor = isCharging ? 0xff4400 : isBoss ? 0xff0044 : 0xff0066;
 
     const box = new Graphics();
     box.beginFill(0x110011, 0.92);
@@ -197,27 +276,30 @@ export class GameRenderer {
     box.endFill();
     box.x = ex;
     box.y = ey;
-    box.filters = [new GlowFilter({ color: boxColor, distance: 16, outerStrength: isCharging ? 3 : 1.8, quality: 0.5 })];
+    box.filters = [new GlowFilter({ color: boxColor, distance: 16, outerStrength: isCharging || isBoss ? 3 : 1.8, quality: 0.5 })];
     this.uiLayer.addChild(box);
 
     const nameText = new Text(state.enemy.type, new TextStyle({
       fontFamily: 'Courier New',
-      fontSize: 17,
+      fontSize: isBoss ? 14 : 17,
       fill: boxColor,
-      fontWeight: 'bold',
+      fontWeight: 'bold'
     }));
     nameText.anchor.set(0.5, 0.5);
     nameText.x = ex;
     nameText.y = ey - 56;
     this.uiLayer.addChild(nameText);
 
-    this.drawHpBar(ex - 85, ey + 28, 170, 12, state.enemy.hp, state.enemy.maxHp, 0xff0066);
+    // Only show enemy HP bar if it's not a boss (boss has full-width bar at top)
+    if (!isBoss) {
+      this.drawHpBar(ex - 85, ey + 28, 170, 12, state.enemy.hp, state.enemy.maxHp, 0xff0066);
+    }
 
     if (state.enemy.shield > 0) {
       this.drawShieldBadge(ex + 90, ey + 30, state.enemy.shield, 0xff66aa);
     }
 
-    this.drawIntent(state, ex, ey - 100);
+    this.drawIntent(state, ex, ey - 100, isDebuff, isSteal);
 
     // Status effects on enemy
     this.drawStatusEffects(state.enemy.statusEffects, ex - 85, ey - 30);
@@ -227,38 +309,59 @@ export class GameRenderer {
     const px = w * 0.3;
     const py = h * 0.27;
 
+    const classColors: Record<string, number> = {
+      HACKER: 0x00ffcc,
+      WARRIOR: 0xff6644,
+      GHOST: 0xaa44ff
+    };
+    const playerColor = classColors[state.playerClass] ?? 0x00ffcc;
+
     const box = new Graphics();
     box.beginFill(0x001118, 0.92);
-    box.lineStyle(3, 0x00ffcc, 1);
+    box.lineStyle(3, playerColor, 1);
     box.drawRoundedRect(-115, -75, 230, 150, 12);
     box.endFill();
     box.x = px;
     box.y = py;
-    box.filters = [new GlowFilter({ color: 0x00ffcc, distance: 16, outerStrength: 1.8, quality: 0.5 })];
+    box.filters = [new GlowFilter({ color: playerColor, distance: 16, outerStrength: 1.8, quality: 0.5 })];
     this.uiLayer.addChild(box);
 
-    const nameText = new Text('RUNNER', new TextStyle({
+    const nameText = new Text(`[${state.playerClass}]`, new TextStyle({
       fontFamily: 'Courier New',
-      fontSize: 17,
-      fill: 0x00ffcc,
-      fontWeight: 'bold',
+      fontSize: 15,
+      fill: playerColor,
+      fontWeight: 'bold'
     }));
     nameText.anchor.set(0.5, 0.5);
     nameText.x = px;
     nameText.y = py - 56;
     this.uiLayer.addChild(nameText);
 
-    this.drawHpBar(px - 85, py + 28, 170, 12, state.player.hp, state.player.maxHp, 0x00ffcc);
+    this.drawHpBar(px - 85, py + 28, 170, 12, state.player.hp, state.player.maxHp, playerColor);
 
     if (state.player.shield > 0) {
       this.drawShieldBadge(px - 90, py + 30, state.player.shield, 0x66ffee);
+    }
+
+    // Ghost Protocol active indicator
+    if (state.combatInvisible) {
+      const invisText = new Text('INVISIBLE', new TextStyle({
+        fontFamily: 'Courier New',
+        fontSize: 9,
+        fill: 0xaa44ff
+      }));
+      invisText.anchor.set(0.5, 0.5);
+      invisText.x = px;
+      invisText.y = py + 14;
+      invisText.filters = [new GlowFilter({ color: 0xaa44ff, distance: 6, outerStrength: 1.5, quality: 0.3 })];
+      this.uiLayer.addChild(invisText);
     }
 
     const manaText = new Text(`\u25C6 ${state.player.mana} / ${state.player.maxMana}`, new TextStyle({
       fontFamily: 'Courier New',
       fontSize: 15,
       fill: 0xffaa00,
-      fontWeight: 'bold',
+      fontWeight: 'bold'
     }));
     manaText.anchor.set(0.5, 0.5);
     manaText.x = px;
@@ -273,12 +376,52 @@ export class GameRenderer {
       const nlText = new Text(`NEURAL\u00D7${state.player.neuralLinkCharges}`, new TextStyle({
         fontFamily: 'Courier New',
         fontSize: 11,
-        fill: 0xaa44ff,
+        fill: 0xaa44ff
       }));
       nlText.x = px + 50;
       nlText.y = py - 30;
       this.uiLayer.addChild(nlText);
     }
+  }
+
+  private renderRelics(state: GameState, w: number, h: number): void {
+    if (state.relics.length === 0) return;
+
+    const px = w * 0.3;
+    const py = h * 0.27;
+    const startX = px - 85;
+    const relicY = py + 75;
+    const iconSize = 22;
+    const gap = 28;
+
+    state.relics.forEach((relicId, i) => {
+      const relic = getRelicById(relicId);
+      if (!relic) return;
+
+      const rx = startX + i * gap;
+
+      // Icon background
+      const bg = new Graphics();
+      bg.beginFill(0x050a12, 0.9);
+      bg.lineStyle(1.5, relic.color, 0.85);
+      bg.drawRoundedRect(0, 0, iconSize, iconSize, 4);
+      bg.endFill();
+      bg.x = rx;
+      bg.y = relicY;
+      bg.filters = [new GlowFilter({ color: relic.color, distance: 6, outerStrength: 1.2, quality: 0.3 })];
+      this.uiLayer.addChild(bg);
+
+      const sym = new Text(relic.symbol, new TextStyle({
+        fontFamily: 'Courier New',
+        fontSize: 7,
+        fill: relic.color,
+        fontWeight: 'bold'
+      }));
+      sym.anchor.set(0.5, 0.5);
+      sym.x = rx + iconSize * 0.5;
+      sym.y = relicY + iconSize * 0.5;
+      this.uiLayer.addChild(sym);
+    });
   }
 
   private renderHand(state: GameState, w: number, h: number): void {
@@ -291,12 +434,18 @@ export class GameRenderer {
     const baseCenterX = w * 0.5;
     const baseY = h * 0.72;
 
+    // Determine if a card is free due to Hacker passive
+    const hackerFreeIdx = state.playerClass === 'HACKER' && state.cardsPlayedThisTurn % 3 === 2
+      ? -1 // not exactly per-card, handled via cost display
+      : -1;
+    void hackerFreeIdx; // suppress unused warning
+
     state.hand.forEach((card, i) => {
       const t = totalCards > 1 ? i / (totalCards - 1) : 0.5;
-      const tCen = t - 0.5; // -0.5 to +0.5
+      const tCen = t - 0.5;
       const angleDeg = tCen * fanSpread;
       const angleRad = angleDeg * (Math.PI / 180);
-      const yArc = tCen * tCen * 28; // arc drop at edges
+      const yArc = tCen * tCen * 28;
 
       const cx = baseCenterX - totalW * 0.5 + i * spacing + CARD_W * 0.5;
       const cy = baseY + yArc + CARD_H * 0.5;
@@ -332,14 +481,13 @@ export class GameRenderer {
         const bounds = cardView.getBounds();
         this.handlers.onCardClick(card.id, {
           x: bounds.x + bounds.width * 0.5,
-          y: bounds.y + bounds.height * 0.5,
+          y: bounds.y + bounds.height * 0.5
         });
       });
 
       this.uiLayer.addChild(cardView);
     });
 
-    // Enable z-sorting so hovered card shows on top
     this.uiLayer.sortableChildren = true;
   }
 
@@ -368,7 +516,7 @@ export class GameRenderer {
       fontFamily: 'Courier New',
       fontSize: 15,
       fill: color,
-      fontWeight: 'bold',
+      fontWeight: 'bold'
     }));
     label.anchor.set(0.5, 0.5);
     label.x = btn.x + 79;
@@ -377,11 +525,10 @@ export class GameRenderer {
     this.uiLayer.addChild(btn);
     this.uiLayer.addChild(label);
 
-    // Turn counter
     const turnText = new Text(`TURN ${state.turn}`, new TextStyle({
       fontFamily: 'Courier New',
       fontSize: 11,
-      fill: 0x335566,
+      fill: 0x335566
     }));
     turnText.anchor.set(0.5, 0);
     turnText.x = btn.x + 79;
@@ -395,7 +542,7 @@ export class GameRenderer {
       const text = new Text(entry, new TextStyle({
         fontFamily: 'Courier New',
         fontSize: 11,
-        fill: 0x55bbcc,
+        fill: 0x55bbcc
       }));
       text.alpha = 0.35 + (idx / (entries.length - 1 || 1)) * 0.65;
       text.x = 22;
@@ -405,18 +552,11 @@ export class GameRenderer {
   }
 
   private renderPiles(state: GameState, _w: number, _h: number): void {
-    const deckCount = state.deck.length;
-    const discardCount = state.discard.length;
-
-    // Deck pile (bottom right)
-    this.drawPileStack(this.deckX, this.deckY, deckCount, 0x005577, 'DECK');
-
-    // Discard pile (bottom left)
-    this.drawPileStack(this.discardX, this.discardY, discardCount, 0x553300, 'DISC');
+    this.drawPileStack(this.deckX, this.deckY, state.deck.length, 0x005577, 'DECK');
+    this.drawPileStack(this.discardX, this.discardY, state.discard.length, 0x553300, 'DISC');
   }
 
   private drawPileStack(cx: number, cy: number, count: number, color: number, label: string): void {
-    // Draw 3 stacked card backs
     const stackAmt = Math.min(count, 3);
     for (let i = stackAmt - 1; i >= 0; i--) {
       const back = new Graphics();
@@ -429,23 +569,21 @@ export class GameRenderer {
       this.uiLayer.addChild(back);
     }
 
-    // Count
     const countText = new Text(`${count}`, new TextStyle({
       fontFamily: 'Courier New',
       fontSize: 13,
       fill: color,
-      fontWeight: 'bold',
+      fontWeight: 'bold'
     }));
     countText.anchor.set(0.5, 0.5);
     countText.x = cx;
     countText.y = cy;
     this.uiLayer.addChild(countText);
 
-    // Label
     const lbl = new Text(label, new TextStyle({
       fontFamily: 'Courier New',
       fontSize: 9,
-      fill: color,
+      fill: color
     }));
     lbl.alpha = 0.7;
     lbl.anchor.set(0.5, 0);
@@ -460,45 +598,96 @@ export class GameRenderer {
     const color = isWin ? 0x00ffcc : 0xff0066;
 
     if (isWin) {
-      this.spawnVictoryParticles(w * 0.5, h * 0.4);
+      this.spawnVictoryParticles(w * 0.5, h * 0.35);
     }
 
     const overlay = new Graphics();
-    overlay.beginFill(0x050508, 0.88);
+    overlay.beginFill(0x050508, 0.92);
     overlay.drawRect(0, 0, w, h);
     overlay.endFill();
     this.uiLayer.addChild(overlay);
 
     const titleText = new Text(title, new TextStyle({
       fontFamily: 'Courier New',
-      fontSize: 44,
+      fontSize: 40,
       fill: color,
-      fontWeight: 'bold',
+      fontWeight: 'bold'
     }));
     titleText.anchor.set(0.5, 0.5);
     titleText.x = w * 0.5;
-    titleText.y = h * 0.38;
+    titleText.y = h * 0.1;
     titleText.filters = [new GlowFilter({ color, distance: 22, outerStrength: 3, quality: 0.5 })];
     this.uiLayer.addChild(titleText);
 
     const sub = new Text(isWin ? 'NEURAL NETWORK COMPROMISED' : 'CONNECTION TERMINATED', new TextStyle({
       fontFamily: 'Courier New',
-      fontSize: 15,
-      fill: color,
+      fontSize: 13,
+      fill: color
     }));
     sub.alpha = 0.65;
     sub.anchor.set(0.5, 0.5);
     sub.x = w * 0.5;
-    sub.y = h * 0.46;
+    sub.y = h * 0.17;
     this.uiLayer.addChild(sub);
+
+    // ---- Run Stats Panel ---------------------------------------------------
+    const stats = state.runStats;
+    const mostUsed = getMostUsedCard(stats);
+    const duration = getRunDuration(stats);
+
+    const statLines = [
+      `FLOORS CLEARED   ${stats.floorsCleared}`,
+      `ENEMIES DEFEATED ${stats.enemiesDefeated}`,
+      `CARDS PLAYED     ${stats.cardsPlayed}`,
+      `DAMAGE DEALT     ${stats.damageDealt}`,
+      `DAMAGE TAKEN     ${stats.damageTaken}`,
+      `BEST HIT         ${stats.bestHit}`,
+      `MOST USED CARD   ${mostUsed}`,
+      `GOLD EARNED      ${stats.goldEarned}`,
+      `RUN TIME         ${duration}`
+    ];
+
+    const panelW = Math.min(w * 0.55, 380);
+    const panelH = statLines.length * 22 + 28;
+    const panelX = w * 0.5 - panelW * 0.5;
+    const panelY = h * 0.22;
+
+    const panel = new Graphics();
+    panel.beginFill(0x050e14, 0.97);
+    panel.lineStyle(1.5, color, 0.3);
+    panel.drawRoundedRect(panelX, panelY, panelW, panelH, 8);
+    panel.endFill();
+    this.uiLayer.addChild(panel);
+
+    const panelTitle = new Text('[ RUN STATISTICS ]', new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 11,
+      fill: color
+    }));
+    panelTitle.alpha = 0.5;
+    panelTitle.anchor.set(0.5, 0);
+    panelTitle.x = w * 0.5;
+    panelTitle.y = panelY + 8;
+    this.uiLayer.addChild(panelTitle);
+
+    statLines.forEach((line, i) => {
+      const statText = new Text(line, new TextStyle({
+        fontFamily: 'Courier New',
+        fontSize: 12,
+        fill: i % 2 === 0 ? 0x88bbcc : 0x66aabb
+      }));
+      statText.x = panelX + 18;
+      statText.y = panelY + 22 + i * 22;
+      this.uiLayer.addChild(statText);
+    });
 
     const btn = new Graphics();
     btn.beginFill(0x111122, 1);
     btn.lineStyle(3, color, 1);
-    btn.drawRoundedRect(0, 0, 200, 56, 12);
+    btn.drawRoundedRect(0, 0, 200, 52, 12);
     btn.endFill();
     btn.x = w * 0.5 - 100;
-    btn.y = h * 0.54;
+    btn.y = panelY + panelH + 18;
     btn.filters = [new GlowFilter({ color, distance: 15, outerStrength: 2, quality: 0.4 })];
     btn.eventMode = 'static';
     btn.cursor = 'pointer';
@@ -510,11 +699,11 @@ export class GameRenderer {
       fontFamily: 'Courier New',
       fontSize: 18,
       fill: color,
-      fontWeight: 'bold',
+      fontWeight: 'bold'
     }));
     label.anchor.set(0.5, 0.5);
     label.x = btn.x + 100;
-    label.y = btn.y + 28;
+    label.y = btn.y + 26;
 
     this.uiLayer.addChild(btn);
     this.uiLayer.addChild(label);
@@ -531,7 +720,7 @@ export class GameRenderer {
       fontFamily: 'Courier New',
       fontSize: 28,
       fill: 0x00ffcc,
-      fontWeight: 'bold',
+      fontWeight: 'bold'
     }));
     title.anchor.set(0.5, 0.5);
     title.x = w * 0.5;
@@ -565,7 +754,6 @@ export class GameRenderer {
       cx += CARD_W + 30;
     });
 
-    // Skip button
     const skipBtn = new Graphics();
     skipBtn.beginFill(0x111122, 1);
     skipBtn.lineStyle(2, 0x556677, 0.8);
@@ -583,7 +771,7 @@ export class GameRenderer {
     const skipLabel = new Text('[ SKIP ]', new TextStyle({
       fontFamily: 'Courier New',
       fontSize: 14,
-      fill: 0x556677,
+      fill: 0x556677
     }));
     skipLabel.anchor.set(0.5, 0.5);
     skipLabel.x = skipBtn.x + 75;
@@ -615,7 +803,7 @@ export class GameRenderer {
       fontFamily: 'Courier New',
       fontSize: 11,
       fill: color,
-      fontWeight: 'bold',
+      fontWeight: 'bold'
     }));
     txt.x = x + bw + 7;
     txt.y = y - 1;
@@ -626,7 +814,7 @@ export class GameRenderer {
     const txt = new Text(`\u25A0 ${shield}`, new TextStyle({
       fontFamily: 'Courier New',
       fontSize: 12,
-      fill: color,
+      fill: color
     }));
     txt.anchor.set(0.5, 0.5);
     txt.x = x;
@@ -634,9 +822,19 @@ export class GameRenderer {
     this.uiLayer.addChild(txt);
   }
 
-  private drawIntent(state: GameState, x: number, y: number): void {
+  private drawIntent(
+    state: GameState,
+    x: number,
+    y: number,
+    isDebuff: boolean,
+    isSteal: boolean
+  ): void {
     const { intent, intentValue } = state.enemy;
-    const color = intent === 'attack' ? 0xff0066 : intent === 'charge' ? 0xff4400 : 0x00ffcc;
+    const color = intent === 'attack' ? 0xff0066
+      : intent === 'charge' ? 0xff4400
+      : intent === 'debuff' ? 0x8844ff
+      : intent === 'steal' ? 0xffaa00
+      : 0x00ffcc;
 
     const ic = new Graphics();
     ic.x = x;
@@ -656,22 +854,42 @@ export class GameRenderer {
         ic.lineTo(-2 + t * 8, 0);
         ic.lineTo(-8 + t * 8, 12);
       }
+    } else if (isDebuff) {
+      // Downward arrow (applying debuff)
+      ic.lineStyle(3, color, 1);
+      ic.moveTo(0, -12);
+      ic.lineTo(0, 12);
+      ic.lineTo(-8, 4);
+      ic.moveTo(0, 12);
+      ic.lineTo(8, 4);
+    } else if (isSteal) {
+      // Grabbing hand shape (simplified)
+      ic.lineStyle(3, color, 1);
+      ic.moveTo(-10, -8);
+      ic.lineTo(10, -8);
+      ic.moveTo(-10, 0);
+      ic.lineTo(10, 0);
+      ic.moveTo(0, -8);
+      ic.lineTo(0, 12);
     } else {
+      // Defend
       ic.lineStyle(3, color, 1);
       ic.beginFill(0x0a1a22, 0.8);
       ic.drawRoundedRect(-14, -14, 28, 32, 6);
       ic.endFill();
     }
 
-    const valText = new Text(
-      intent === 'charge' ? 'CHARGING' : `${intentValue}`,
-      new TextStyle({
-        fontFamily: 'Courier New',
-        fontSize: intent === 'charge' ? 10 : 12,
-        fill: color,
-        fontWeight: 'bold',
-      })
-    );
+    const label = intent === 'charge' ? 'CHARGING'
+      : intent === 'debuff' ? 'DEBUFF'
+      : intent === 'steal' ? 'STEAL'
+      : `${intentValue}`;
+
+    const valText = new Text(label, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: label.length > 4 ? 10 : 12,
+      fill: color,
+      fontWeight: 'bold'
+    }));
     valText.anchor.set(0.5, 0.5);
     valText.x = 0;
     valText.y = 30;
@@ -684,12 +902,11 @@ export class GameRenderer {
     if (effects.length === 0) return;
     const colors: Record<string, number> = { vulnerable: 0xff4400, strength: 0xff8800, weak: 0x8844ff };
     effects.forEach((e, i) => {
-      const txt = new Text(`${e.type.substring(0, 4).toUpperCase()}${e.type !== 'strength' ? `(${e.value})` : ''}`, new TextStyle({
-        fontFamily: 'Courier New',
-        fontSize: 9,
-        fill: colors[e.type] ?? 0xaaaaaa,
-      }));
-      txt.x = x + i * 48;
+      const txt = new Text(
+        `${e.type.substring(0, 4).toUpperCase()}${e.type !== 'strength' ? `(${e.value})` : `+${e.value}`}`,
+        new TextStyle({ fontFamily: 'Courier New', fontSize: 9, fill: colors[e.type] ?? 0xaaaaaa })
+      );
+      txt.x = x + i * 50;
       txt.y = y;
       this.uiLayer.addChild(txt);
     });
@@ -701,7 +918,7 @@ export class GameRenderer {
     const rarityColors: Record<string, number> = {
       common: 0x00ffcc,
       rare: 0xaa44ff,
-      legendary: 0xffaa00,
+      legendary: 0xffaa00
     };
     const borderColor = rarityColors[card.rarity] ?? 0x00ffcc;
 
@@ -711,13 +928,11 @@ export class GameRenderer {
     g.drawRoundedRect(0, 0, CARD_W, CARD_H, 12);
     g.endFill();
 
-    // Card type stripe
     const stripeColor = card.type === 'attack' ? 0x220011 : 0x001122;
     g.beginFill(stripeColor, 0.7);
     g.drawRoundedRect(4, 4, CARD_W - 8, 28, 6);
     g.endFill();
 
-    // Circuit pattern on card body
     g.lineStyle(1, borderColor, 0.07);
     for (let row = 0; row < 3; row++) {
       g.moveTo(10, 82 + row * 22);
@@ -732,13 +947,12 @@ export class GameRenderer {
       fontFamily: 'Courier New',
       fontSize: 13,
       fill: borderColor,
-      fontWeight: 'bold',
+      fontWeight: 'bold'
     }));
     nameText.x = 9;
     nameText.y = 9;
     g.addChild(nameText);
 
-    // Cost circle
     const costBg = new Graphics();
     costBg.beginFill(0x060c14, 0.95);
     costBg.lineStyle(2, 0xffaa00, 0.9);
@@ -752,38 +966,35 @@ export class GameRenderer {
       fontFamily: 'Courier New',
       fontSize: 13,
       fill: 0xffaa00,
-      fontWeight: 'bold',
+      fontWeight: 'bold'
     }));
     costText.anchor.set(0.5, 0.5);
     costText.x = CARD_W - 17;
     costText.y = 17;
     g.addChild(costText);
 
-    // Type tag
     const typeTag = new Text(card.type.toUpperCase(), new TextStyle({
       fontFamily: 'Courier New',
       fontSize: 9,
-      fill: card.type === 'attack' ? 0xff6688 : 0x44ccff,
+      fill: card.type === 'attack' ? 0xff6688 : 0x44ccff
     }));
     typeTag.alpha = 0.8;
     typeTag.x = 9;
     typeTag.y = 36;
     g.addChild(typeTag);
 
-    // Separator
     const sep = new Graphics();
     sep.lineStyle(1, borderColor, 0.25);
     sep.moveTo(8, 50);
     sep.lineTo(CARD_W - 8, 50);
     g.addChild(sep);
 
-    // Description
     const desc = new Text(card.description, new TextStyle({
       fontFamily: 'Courier New',
       fontSize: 11,
       fill: 0xaaddee,
       wordWrap: true,
-      wordWrapWidth: CARD_W - 20,
+      wordWrapWidth: CARD_W - 20
     }));
     desc.x = 9;
     desc.y = 57;
@@ -793,7 +1004,7 @@ export class GameRenderer {
       const exhaustText = new Text('EXHAUST', new TextStyle({
         fontFamily: 'Courier New',
         fontSize: 9,
-        fill: 0xff4444,
+        fill: 0xff4444
       }));
       exhaustText.alpha = 0.8;
       exhaustText.anchor.set(0.5, 1);
@@ -807,16 +1018,12 @@ export class GameRenderer {
 
   private createCardBack(): Graphics {
     const g = new Graphics();
-
-    // Background
     g.beginFill(0x040810);
     g.lineStyle(2, 0x005577, 0.9);
     g.drawRoundedRect(0, 0, CARD_W, CARD_H, 12);
     g.endFill();
 
-    // Circuit board lines
     g.lineStyle(1, 0x003344, 0.7);
-    // Horizontal traces
     for (let row = 0; row < 5; row++) {
       const y = 30 + row * 30;
       g.moveTo(12, y);
@@ -824,7 +1031,6 @@ export class GameRenderer {
       g.moveTo(55 + (row % 2) * 20, y);
       g.lineTo(CARD_W - 12, y);
     }
-    // Vertical traces
     for (let col = 0; col < 3; col++) {
       const x = 30 + col * 35;
       g.moveTo(x, 15);
@@ -833,7 +1039,6 @@ export class GameRenderer {
       g.lineTo(x, CARD_H - 20);
     }
 
-    // Junction dots
     g.lineStyle(0);
     g.beginFill(0x00aacc, 0.7);
     const dots = [[40, 30], [75, 60], [55, 90], [90, 45], [30, 120], [100, 130]];
@@ -842,7 +1047,6 @@ export class GameRenderer {
     }
     g.endFill();
 
-    // Center logo / symbol
     g.lineStyle(2, 0x00aacc, 0.45);
     g.drawCircle(CARD_W * 0.5, CARD_H * 0.5, 22);
     g.moveTo(CARD_W * 0.5 - 12, CARD_H * 0.5);
@@ -856,10 +1060,16 @@ export class GameRenderer {
   // ---- Effects / Animations ------------------------------------------------
 
   private handleStateTransitions(prev: GameState, next: GameState, w: number, h: number): void {
+    const isBoss = BOSS_TYPES.includes(next.enemy.type);
     const ex = w * 0.68;
-    const ey = h * 0.27;
+    const ey = isBoss ? h * 0.32 : h * 0.27;
     const px = w * 0.3;
     const py = h * 0.27;
+
+    // Boss phase transition
+    if (next.bossPhase > prev.bossPhase) {
+      this.spawnBossPhaseTransition(next.bossPhase, w, h);
+    }
 
     // Enemy took damage
     if (next.enemy.hp < prev.enemy.hp) {
@@ -869,7 +1079,7 @@ export class GameRenderer {
       if (amount > 10) this.screenShake(9, 0.3);
     }
 
-    // Enemy shield reduced (without HP drop)
+    // Enemy shield reduced
     if (next.enemy.shield < prev.enemy.shield && next.enemy.hp === prev.enemy.hp) {
       const blocked = prev.enemy.shield - next.enemy.shield;
       this.spawnFloatNumber(ex + 35, ey - 65, blocked, 0x4488ff, '-');
@@ -901,13 +1111,53 @@ export class GameRenderer {
     }
   }
 
+  private spawnBossPhaseTransition(phase: number, w: number, h: number): void {
+    const phaseColors: Record<number, number> = { 1: 0xff0044, 2: 0xff4400, 3: 0xff0000 };
+    const color = phaseColors[phase] ?? 0xff0000;
+
+    // Full-screen flash
+    const flash = new Graphics();
+    flash.beginFill(color, 0.4);
+    flash.drawRect(0, 0, w, h);
+    flash.endFill();
+    this.effectsLayer.addChild(flash);
+
+    this.addAnimation(0.5, (p) => {
+      flash.alpha = 0.4 * (1 - p);
+    }, () => {
+      this.effectsLayer.removeChild(flash);
+    });
+
+    // Dramatic phase text
+    const phaseText = new Text(`— PHASE ${phase} —`, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 52,
+      fill: color,
+      fontWeight: 'bold'
+    }));
+    phaseText.anchor.set(0.5, 0.5);
+    phaseText.x = w * 0.5;
+    phaseText.y = h * 0.5;
+    phaseText.filters = [new GlowFilter({ color, distance: 40, outerStrength: 5, quality: 0.5 })];
+    this.effectsLayer.addChild(phaseText);
+
+    this.addAnimation(1.6, (p) => {
+      phaseText.scale.set(0.7 + p * 0.5);
+      phaseText.alpha = p < 0.3 ? p / 0.3 : p > 0.7 ? 1 - (p - 0.7) / 0.3 : 1;
+    }, () => {
+      this.effectsLayer.removeChild(phaseText);
+    });
+
+    this.screenShake(16, 0.5);
+  }
+
   private spawnFloatNumber(x: number, y: number, amount: number, color: number, prefix = ''): void {
     const fontSize = amount > 15 ? 28 : amount > 8 ? 22 : 18;
     const text = new Text(`${prefix}${amount}`, new TextStyle({
       fontFamily: 'Courier New',
       fontSize,
       fill: color,
-      fontWeight: 'bold',
+      fontWeight: 'bold'
     }));
     text.anchor.set(0.5, 0.5);
     text.x = x + (Math.random() - 0.5) * 24;
@@ -990,7 +1240,7 @@ export class GameRenderer {
       const sy = y;
       this.addAnimation(dur, (p) => {
         particle.x = sx + vx * p;
-        particle.y = sy + vy * p + 40 * p * p; // slight gravity
+        particle.y = sy + vy * p + 40 * p * p;
         particle.alpha = p < 0.6 ? 1 : 1 - (p - 0.6) / 0.4;
         particle.scale.set(1 - p * 0.4);
       }, () => {
@@ -1002,8 +1252,9 @@ export class GameRenderer {
   private updateChargeEffect(): void {
     const w = this.app.screen.width;
     const h = this.app.screen.height;
+    const isBoss = this.lastState ? BOSS_TYPES.includes(this.lastState.enemy.type) : false;
     const ex = w * 0.68;
-    const ey = h * 0.27;
+    const ey = isBoss ? h * 0.32 : h * 0.27;
 
     if (this.lastState?.enemy.intent === 'charge') {
       if (!this.chargeRing) {

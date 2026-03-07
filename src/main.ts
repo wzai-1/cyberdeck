@@ -1,13 +1,16 @@
 import { Application } from 'pixi.js';
 import { createInitialState } from './game/state';
 import { playCard, endPlayerTurn, startPlayerTurn, selectCardReward } from './game/combat';
-import { generateCardReward } from './game/cards';
+import { generateCardReward, createCardByName } from './game/cards';
 import { generateMap } from './game/map';
-import { createEnemy } from './game/enemies';
+import { createEnemy, enemyTypeForFloor } from './game/enemies';
+import { CLASS_DATA, createClassDeck } from './game/classes';
+import { getRandomRelic } from './game/relics';
 import { GameRenderer } from './ui/GameRenderer';
 import { MapRenderer } from './ui/MapRenderer';
 import { ShopRenderer } from './ui/ShopRenderer';
-import type { GameState, EnemyType, MapState } from './game/state';
+import { ClassSelectRenderer } from './ui/ClassSelectRenderer';
+import type { GameState, PlayerClass, MapState } from './game/state';
 
 // ---- App setup -------------------------------------------------------------
 
@@ -31,13 +34,15 @@ let encounterPos = 0;
 
 // ---- Screen helpers --------------------------------------------------------
 
-function showScreen(screen: 'map' | 'shop' | 'game'): void {
+function showScreen(screen: 'map' | 'shop' | 'game' | 'class_select'): void {
   mapRenderer.hide();
   shopRenderer.hide();
   gameRenderer.hide();
+  classSelectRenderer.hide();
   if (screen === 'map') mapRenderer.show();
   else if (screen === 'shop') shopRenderer.show();
-  else gameRenderer.show();
+  else if (screen === 'game') gameRenderer.show();
+  else classSelectRenderer.show();
 }
 
 // ---- Map helpers -----------------------------------------------------------
@@ -46,7 +51,7 @@ function createFreshMapState(): MapState {
   const base = generateMap();
   return {
     currentFloor: 0,
-    currentNode: 1, // centre (adjacency source for floor 0+)
+    currentNode: 1,
     nodes: base.nodes.map((row) => row.map((n) => ({ ...n, visited: false }))),
   };
 }
@@ -59,36 +64,99 @@ function advanceFloor(ms: MapState, completedFloor: number, completedPos: number
   };
 }
 
-function enemyTypeForFloor(floor: number): EnemyType {
-  if (floor <= 1) return 'VIRUS_EXE';
-  if (floor <= 3) return 'FIREWALL_SYS';
-  return 'CORRUPTED_AI';
-}
-
 // ---- New run ---------------------------------------------------------------
 
-function createNewRun(): GameState {
+function createNewRun(cls: PlayerClass): GameState {
   const base = createInitialState();
+  const classInfo = CLASS_DATA[cls];
+  const deck = createClassDeck(cls, createCardByName);
+  const startingRelic = getRandomRelic();
+
   return {
     ...base,
     phase: 'map',
-    player: { ...base.player, gold: 100 },
+    playerClass: cls,
+    player: {
+      ...base.player,
+      hp: classInfo.hp,
+      maxHp: classInfo.hp,
+      mana: classInfo.maxMana,
+      maxMana: classInfo.maxMana,
+      gold: 100
+    },
+    relics: [startingRelic.id],
+    fireproofUsed: false,
+    totalCardsPlayed: 0,
+    overclockDouble: false,
+    cardsPlayedThisTurn: 0,
+    firstAttackThisTurn: true,
+    combatInvisible: false,
+    lastPlayerCardDamage: 0,
+    bossPhase: 1,
     mapState: createFreshMapState(),
     hand: [],
-    deck: base.deck,
+    deck,
     discard: [],
-    combatLog: ['NEURAL LINK ESTABLISHED', 'SELECT YOUR ENTRY POINT'],
+    combatLog: [
+      'NEURAL LINK ESTABLISHED',
+      `CLASS: ${cls}`,
+      `RELIC: ${startingRelic.name}`,
+      'SELECT YOUR ENTRY POINT'
+    ],
   };
 }
 
+// ---- Apply combat-start relic effects -------------------------------------
+
+function applyCombatStartRelics(state: GameState): GameState {
+  let s = state;
+
+  // Neuro-Chip: +1 mana first turn of each combat
+  if (s.relics.includes('neuro_chip')) {
+    s = {
+      ...s,
+      player: { ...s.player, mana: s.player.mana + 1 },
+      combatLog: [...s.combatLog, 'NEURO-CHIP: +1 MANA']
+    };
+  }
+
+  // Ghost Protocol relic: start combat invisible
+  if (s.relics.includes('ghost_protocol')) {
+    s = {
+      ...s,
+      combatInvisible: true,
+      combatLog: [...s.combatLog, 'GHOST PROTOCOL: INVISIBLE']
+    };
+  }
+
+  // Virus Scanner: enemy loses 5 shield at combat start
+  if (s.relics.includes('virus_scanner') && s.enemy.shield > 0) {
+    const reduced = Math.max(0, s.enemy.shield - 5);
+    s = {
+      ...s,
+      enemy: { ...s.enemy, shield: reduced },
+      combatLog: [...s.combatLog, `VIRUS SCANNER: ENEMY -5 SHIELD`]
+    };
+  }
+
+  return s;
+}
+
 // ---- Renderers -------------------------------------------------------------
+
+const classSelectRenderer = new ClassSelectRenderer(app, {
+  onClassSelect: (cls: PlayerClass) => {
+    state = createNewRun(cls);
+    mapRenderer.render(state);
+    showScreen('map');
+  }
+});
 
 const mapRenderer = new MapRenderer(app, {
   onNodeSelect: (floor, pos) => {
     const mapState = state.mapState!;
     const node = mapState.nodes[floor][pos];
 
-    // Mark node visited
     const updatedMapState: MapState = {
       ...mapState,
       nodes: mapState.nodes.map((row, f) =>
@@ -100,37 +168,50 @@ const mapRenderer = new MapRenderer(app, {
     encounterPos = pos;
 
     if (node.type === 'combat') {
-      const enemy = createEnemy(enemyTypeForFloor(floor));
-      // Merge deck + discard back for next combat
+      const enemyType = enemyTypeForFloor(floor);
+      const enemy = createEnemy(enemyType);
       const fullDeck = [...state.deck, ...state.discard, ...state.hand];
-      state = startPlayerTurn({
+
+      // Start combat: reset bossPhase for new enemy
+      let combatState: GameState = {
         ...state,
         enemy,
         hand: [],
         deck: fullDeck,
         discard: [],
         mapState: updatedMapState,
+        bossPhase: 1,
+        combatInvisible: false,
+        lastPlayerCardDamage: 0,
         combatLog: [
           `ENTERING SECTOR ${floor + 1}`,
-          `TARGET ACQUIRED: ${enemy.type}`,
+          `TARGET ACQUIRED: ${enemyType}`,
         ],
         zeroCostTurn: false,
-      });
+      };
+
+      // Run startPlayerTurn first to set mana etc., then apply combat-start relics
+      combatState = startPlayerTurn(combatState);
+      combatState = applyCombatStartRelics(combatState);
+
+      state = combatState;
       gameRenderer.animateDrawCards(state.hand.length);
       gameRenderer.render(state);
       showScreen('game');
     } else if (node.type === 'shop') {
       const shopInventory = generateCardReward();
+      const shopRelic = getRandomRelic(state.relics); // don't offer relics player already has
       state = {
         ...state,
         phase: 'shop',
         mapState: advanceFloor(updatedMapState, floor, pos),
         shopInventory,
+        shopRelic: shopRelic.id,
       };
       shopRenderer.render(state);
       showScreen('shop');
     } else {
-      // Rest: heal 25 HP, stay on map
+      // Rest: heal 25 HP
       state = {
         ...state,
         phase: 'map',
@@ -161,9 +242,22 @@ const shopRenderer = new ShopRenderer(app, {
     };
     shopRenderer.render(state);
   },
+  onBuyRelic: (relicId) => {
+    if (!state.shopRelic || state.shopRelic !== relicId) return;
+    if (state.player.gold < 80) return;
+    if (state.relics.includes(relicId)) return; // already owned
+
+    state = {
+      ...state,
+      player: { ...state.player, gold: state.player.gold - 80 },
+      relics: [...state.relics, relicId],
+      shopRelic: undefined,
+      combatLog: [...state.combatLog, `RELIC ACQUIRED: ${relicId.toUpperCase()}`],
+    };
+    shopRenderer.render(state);
+  },
   onLeave: () => {
-    state = { ...state, phase: 'map', shopInventory: undefined };
-    // Check victory
+    state = { ...state, phase: 'map', shopInventory: undefined, shopRelic: undefined };
     if (state.mapState && state.mapState.currentFloor >= 5) {
       state = { ...state, phase: 'win' };
       gameRenderer.render(state);
@@ -180,6 +274,7 @@ const gameRenderer = new GameRenderer(app, {
     if (state.phase !== 'player_turn') return;
     const card = state.hand.find((c) => c.id === cardId);
     if (!card) return;
+    // Quick mana guard (full check is inside playCard)
     if (state.player.mana < card.cost && !state.zeroCostTurn) return;
 
     gameRenderer.animateCardPlay(card, position, () => {
@@ -194,24 +289,31 @@ const gameRenderer = new GameRenderer(app, {
   onSelectCardReward: (cardId) => {
     state = selectCardReward(state, cardId);
 
-    // selectCardReward transitions to 'win' — intercept and check map
     if (state.phase === 'win' && state.mapState) {
       const nextMapState = advanceFloor(state.mapState, encounterFloor, encounterPos);
 
       if (nextMapState.currentFloor >= 5) {
-        // True run victory
-        gameRenderer.render(state); // show win screen
+        gameRenderer.render(state);
         return;
       }
 
-      // More floors remain — back to map
+      // Gold Chip relic: +10 gold after every combat
+      const bonusGold = state.relics.includes('gold_chip') ? 40 : 30; // 30 base + 10 bonus
+
       state = {
         ...state,
         phase: 'map',
         mapState: nextMapState,
-        // Award gold for combat win
-        player: { ...state.player, gold: state.player.gold + 30 },
-        combatLog: [...state.combatLog, '+30 CREDITS EARNED'],
+        player: { ...state.player, gold: state.player.gold + bonusGold },
+        runStats: {
+          ...state.runStats,
+          floorsCleared: state.runStats.floorsCleared + 1,
+          goldEarned: state.runStats.goldEarned + bonusGold
+        },
+        combatLog: [
+          ...state.combatLog,
+          `+${bonusGold} CREDITS EARNED${state.relics.includes('gold_chip') ? ' (GOLD CHIP)' : ''}`
+        ],
       };
       mapRenderer.render(state);
       showScreen('map');
@@ -220,23 +322,25 @@ const gameRenderer = new GameRenderer(app, {
     }
   },
   onPlayAgain: () => {
-    state = createNewRun();
-    mapRenderer.render(state);
-    showScreen('map');
+    // Go back to class select
+    showScreen('class_select');
+    classSelectRenderer.render();
   },
 });
 
 // ---- Boot ------------------------------------------------------------------
 
-state = createNewRun();
-mapRenderer.render(state);
-showScreen('map');
+// Start with class selection
+showScreen('class_select');
 
 window.addEventListener('resize', () => {
+  if (!state) return;
   if (state.phase === 'map') {
     mapRenderer.render(state);
   } else if (state.phase === 'shop') {
     shopRenderer.render(state);
+  } else if (state.phase === 'class_select') {
+    classSelectRenderer.render();
   } else {
     gameRenderer.render(state);
   }
