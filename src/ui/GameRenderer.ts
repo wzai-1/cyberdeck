@@ -45,6 +45,9 @@ export class GameRenderer {
   // Persistent per-frame effects
   private chargeRing: Graphics | null = null;
 
+  // Tooltip layer (always on top)
+  private tooltipLayer: Container;
+
   // Cache layout coords so animations can target them
   private deckX = 0;
   private deckY = 0;
@@ -59,10 +62,12 @@ export class GameRenderer {
     this.background = new Graphics();
     this.uiLayer = new Graphics();
     this.effectsLayer = new Container();
+    this.tooltipLayer = new Container();
 
     this.rootContainer.addChild(this.background);
     this.rootContainer.addChild(this.uiLayer);
     this.rootContainer.addChild(this.effectsLayer);
+    this.rootContainer.addChild(this.tooltipLayer);
     this.app.stage.addChild(this.rootContainer);
     this.rootContainer.visible = false;
 
@@ -126,6 +131,7 @@ export class GameRenderer {
     this.renderEndTurnButton(state, w, h);
     this.renderCombatLog(state, w, h);
     this.renderPiles(state, w, h);
+    this.renderComboCounter(state, w, h);
   }
 
   /** Animate card flying from hand to center then vanishing. */
@@ -469,6 +475,7 @@ export class GameRenderer {
         cardView.rotation = 0;
         cardView.zIndex = 100;
         cardView.filters = [new GlowFilter({ color: 0x00ffcc, distance: 28, outerStrength: 4, quality: 0.5 })];
+        this.showCardTooltip(card, cx, origY - 32 - CARD_H * 0.5 - 14);
       });
       cardView.on('pointerout', () => {
         cardView.scale.set(1.0);
@@ -476,6 +483,7 @@ export class GameRenderer {
         cardView.rotation = origRot;
         cardView.zIndex = i;
         cardView.filters = [new GlowFilter({ color: 0x00ffcc, distance: 12, outerStrength: 1.8, quality: 0.4 })];
+        this.hideCardTooltip();
       });
       cardView.on('pointerdown', () => {
         const bounds = cardView.getBounds();
@@ -1312,6 +1320,86 @@ export class GameRenderer {
       this.background.moveTo(0, y);
       this.background.lineTo(w, y);
     }
+  }
+
+  // ---- Card Tooltip ---------------------------------------------------------
+
+  private showCardTooltip(card: Card, centerX: number, bottomY: number): void {
+    this.tooltipLayer.removeChildren();
+
+    const rarityColors: Record<string, number> = {
+      common: 0x00ffcc,
+      rare: 0xaa44ff,
+      legendary: 0xffaa00,
+    };
+    const color = rarityColors[card.rarity] ?? 0x00ffcc;
+    const tipW = 200;
+    const tipH = 80;
+    const tx = Math.max(8, Math.min(this.app.screen.width - tipW - 8, centerX - tipW * 0.5));
+    const ty = Math.max(8, bottomY - tipH);
+
+    const bg = new Graphics();
+    bg.beginFill(0x04101a, 0.97);
+    bg.lineStyle(2, color, 0.85);
+    bg.drawRoundedRect(0, 0, tipW, tipH, 8);
+    bg.endFill();
+    bg.x = tx;
+    bg.y = ty;
+    bg.filters = [new GlowFilter({ color, distance: 10, outerStrength: 1.5, quality: 0.4 })];
+    this.tooltipLayer.addChild(bg);
+
+    const nameT = new Text(card.name, new TextStyle({
+      fontFamily: 'Courier New', fontSize: 12, fill: color, fontWeight: 'bold',
+    }));
+    nameT.x = tx + 8;
+    nameT.y = ty + 6;
+    this.tooltipLayer.addChild(nameT);
+
+    const rarityT = new Text(`${card.rarity.toUpperCase()} · ${card.type.toUpperCase()} · ${card.cost} MANA`, new TextStyle({
+      fontFamily: 'Courier New', fontSize: 9, fill: color,
+    }));
+    rarityT.alpha = 0.6;
+    rarityT.x = tx + 8;
+    rarityT.y = ty + 22;
+    this.tooltipLayer.addChild(rarityT);
+
+    const sep = new Graphics();
+    sep.lineStyle(1, color, 0.25);
+    sep.moveTo(tx + 8, ty + 33);
+    sep.lineTo(tx + tipW - 8, ty + 33);
+    this.tooltipLayer.addChild(sep);
+
+    const descT = new Text(card.description, new TextStyle({
+      fontFamily: 'Courier New', fontSize: 10, fill: 0xaaddee,
+      wordWrap: true, wordWrapWidth: tipW - 16,
+    }));
+    descT.x = tx + 8;
+    descT.y = ty + 38;
+    this.tooltipLayer.addChild(descT);
+  }
+
+  private hideCardTooltip(): void {
+    this.tooltipLayer.removeChildren();
+  }
+
+  // ---- Combo Counter --------------------------------------------------------
+
+  private renderComboCounter(state: GameState, w: number, h: number): void {
+    const combo = state.cardsPlayedThisTurn;
+    if (combo < 3) return;
+
+    const comboText = new Text(`COMBO ×${combo}`, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 28,
+      fill: 0xffaa00,
+      fontWeight: 'bold',
+    }));
+    comboText.anchor.set(0.5, 0.5);
+    comboText.x = w * 0.5;
+    comboText.y = h * 0.62;
+    comboText.alpha = 0.85;
+    comboText.filters = [new GlowFilter({ color: 0xffaa00, distance: 18, outerStrength: 2.5, quality: 0.4 })];
+    this.uiLayer.addChild(comboText);
   }
 }
 
