@@ -20,6 +20,8 @@ export default defineConfig({
             './src/game/runStats',
             './src/game/achievements',
             './src/game/leaderboard',
+            './src/game/dailyChallenge',
+            './src/game/balance',
           ],
           ui: [
             './src/ui/GameRenderer',

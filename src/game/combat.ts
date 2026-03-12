@@ -4,6 +4,7 @@ import { getCardEffect, getEffectiveCost, generateCardReward, processCurseDrawEf
 import { advanceEnemyPattern, isEliteEnemy } from './enemies';
 import { applyStatusEffects, tickStatusEffects } from './statusEffects';
 import { getRandomRelic } from './relics';
+import { BOSS_PHASE_2_THRESHOLD, BOSS_PHASE_3_THRESHOLD } from './balance';
 
 // Re-export utilities that tests import from this module
 export { applyDamage, drawCards };
@@ -33,7 +34,8 @@ export function startPlayerTurn(state: GameState): GameState {
     darkPatternActive: false,
     invincibleThisTurn: false,
     extraTurn: false,
-    adminOverrideTurnsLeft
+    adminOverrideTurnsLeft,
+    staticChainCount: 0  // reset STATIC chain depth each turn
   };
 
   // Warrior passive: +2 shield every turn
@@ -269,10 +271,13 @@ export function endPlayerTurn(state: GameState): GameState {
   const enemyType = nextState.enemy.type;
   const { intent, intentValue } = nextState.enemy;
 
-  // ---- SYSTEM_OVERLORD phase transitions (based on current HP) -------------
+  // ---- SYSTEM_OVERLORD phase transitions (scaled with enemy maxHP) ----------
   if (enemyType === 'SYSTEM_OVERLORD') {
+    const maxHp = nextState.enemy.maxHp;
+    const phase2Hp = Math.round(maxHp * BOSS_PHASE_2_THRESHOLD);
+    const phase3Hp = Math.round(maxHp * BOSS_PHASE_3_THRESHOLD);
     const newPhase =
-      nextState.enemy.hp <= 50 ? 3 : nextState.enemy.hp <= 100 ? 2 : 1;
+      nextState.enemy.hp <= phase3Hp ? 3 : nextState.enemy.hp <= phase2Hp ? 2 : 1;
     if (newPhase > nextState.bossPhase) {
       nextState = {
         ...nextState,
@@ -291,10 +296,11 @@ export function endPlayerTurn(state: GameState): GameState {
       ? 'attack'
       : intent;
 
-  // ---- ELITE_WORM: attack scales with player shield -----------------------
-  let attackValue = intentValue;
+  // ---- Floor-scaled attack value -------------------------------------------
+  const floorMult = nextState.enemy.floorMultiplier ?? 1;
+  let attackValue = Math.round(intentValue * floorMult);
   if (enemyType === 'ELITE_WORM' && effectiveIntent === 'attack') {
-    attackValue = intentValue + nextState.player.shield;
+    attackValue = Math.round((intentValue + nextState.player.shield) * floorMult);
   }
 
   // ---- ELITE_WORM: inflict Weak on player every turn ----------------------

@@ -41,6 +41,7 @@ export class GameRenderer {
   private animations: Animation[] = [];
   private lastState: GameState | null = null;
   private pulseTime = 0;
+  private idleTime = 0;
 
   // Persistent per-frame effects
   private chargeRing: Graphics | null = null;
@@ -74,6 +75,7 @@ export class GameRenderer {
     this.app.ticker.add((delta) => {
       const dt = delta / 60;
       this.pulseTime += dt;
+      this.idleTime += dt;
       this.updateAnimations(dt);
       this.updateChargeEffect();
     });
@@ -199,7 +201,7 @@ export class GameRenderer {
 
   // ---- Private rendering ---------------------------------------------------
 
-  private renderBossBar(state: GameState, w: number, h: number): void {
+  private renderBossBar(state: GameState, w: number, _h: number): void {
     const bh = 36;
     const bx = 0;
     const by = 0;
@@ -268,7 +270,8 @@ export class GameRenderer {
 
   private renderEnemy(state: GameState, w: number, h: number, isBoss: boolean): void {
     const ex = w * 0.68;
-    const ey = isBoss ? h * 0.32 : h * 0.27; // shift down slightly for boss to avoid overlap with boss bar
+    const eyBase = isBoss ? h * 0.32 : h * 0.27;
+    const ey = eyBase + Math.sin(this.idleTime * 1.8 + 1.5) * 3; // idle float (offset from player)
 
     const isCharging = state.enemy.intent === 'charge';
     const isDebuff = state.enemy.intent === 'debuff';
@@ -284,6 +287,13 @@ export class GameRenderer {
     box.y = ey;
     box.filters = [new GlowFilter({ color: boxColor, distance: 16, outerStrength: isCharging || isBoss ? 3 : 1.8, quality: 0.5 })];
     this.uiLayer.addChild(box);
+
+    // Enemy sprite
+    const spriteG = new Graphics();
+    spriteG.x = ex;
+    spriteG.y = ey - 8;
+    this.drawEnemySprite(spriteG, state.enemy.type, boxColor);
+    this.uiLayer.addChild(spriteG);
 
     const nameText = new Text(state.enemy.type, new TextStyle({
       fontFamily: 'Courier New',
@@ -313,7 +323,7 @@ export class GameRenderer {
 
   private renderPlayer(state: GameState, w: number, h: number): void {
     const px = w * 0.3;
-    const py = h * 0.27;
+    const py = h * 0.27 + Math.sin(this.idleTime * 1.8) * 3; // gentle idle float
 
     const classColors: Record<string, number> = {
       HACKER: 0x00ffcc,
@@ -331,6 +341,13 @@ export class GameRenderer {
     box.y = py;
     box.filters = [new GlowFilter({ color: playerColor, distance: 16, outerStrength: 1.8, quality: 0.5 })];
     this.uiLayer.addChild(box);
+
+    // Player sprite
+    const playerSpriteG = new Graphics();
+    playerSpriteG.x = px;
+    playerSpriteG.y = py - 8;
+    this.drawPlayerSprite(playerSpriteG, state.playerClass, playerColor);
+    this.uiLayer.addChild(playerSpriteG);
 
     const nameText = new Text(`[${state.playerClass}]`, new TextStyle({
       fontFamily: 'Courier New',
@@ -1310,6 +1327,7 @@ export class GameRenderer {
     this.background.drawRect(0, 0, w, h);
     this.background.endFill();
 
+    // Neon grid
     this.background.lineStyle(1, 0x14142a, 0.55);
     const gridSize = 48;
     for (let x = 0; x <= w; x += gridSize) {
@@ -1320,6 +1338,19 @@ export class GameRenderer {
       this.background.moveTo(0, y);
       this.background.lineTo(w, y);
     }
+
+    // CRT scanline overlay
+    this.background.lineStyle(1, 0x000000, 0.07);
+    for (let y = 0; y <= h; y += 4) {
+      this.background.moveTo(0, y);
+      this.background.lineTo(w, y);
+    }
+
+    // Neon border around game canvas
+    this.background.lineStyle(3, 0x00ffcc, 0.12);
+    this.background.drawRect(1, 1, w - 2, h - 2);
+    this.background.lineStyle(1, 0x00ffcc, 0.05);
+    this.background.drawRect(4, 4, w - 8, h - 8);
   }
 
   // ---- Card Tooltip ---------------------------------------------------------
@@ -1400,6 +1431,193 @@ export class GameRenderer {
     comboText.alpha = 0.85;
     comboText.filters = [new GlowFilter({ color: 0xffaa00, distance: 18, outerStrength: 2.5, quality: 0.4 })];
     this.uiLayer.addChild(comboText);
+  }
+
+  // ---- Sprite drawing -------------------------------------------------------
+
+  /** Draw a pixel-art style hacker figure centered at (0,0). */
+  private drawPlayerSprite(g: Graphics, playerClass: string, color: number): void {
+    const alpha = 0.85;
+    g.lineStyle(0);
+
+    // Body
+    g.beginFill(color, alpha * 0.25);
+    g.drawRect(-12, -8, 24, 22);
+    g.endFill();
+    g.lineStyle(2, color, alpha);
+    g.drawRect(-12, -8, 24, 22);
+
+    // Head
+    g.lineStyle(0);
+    g.beginFill(color, alpha * 0.3);
+    g.drawCircle(0, -20, 12);
+    g.endFill();
+    g.lineStyle(2, color, alpha);
+    g.drawCircle(0, -20, 12);
+
+    // Visor (horizontal line across head)
+    g.lineStyle(3, color, alpha);
+    g.moveTo(-8, -20);
+    g.lineTo(8, -20);
+
+    // Arm left
+    g.lineStyle(2, color, alpha * 0.7);
+    g.moveTo(-12, -4);
+    g.lineTo(-22, 6);
+    g.moveTo(-22, 6);
+    g.lineTo(-18, 14);
+
+    // Arm right
+    g.moveTo(12, -4);
+    g.lineTo(22, 6);
+    g.moveTo(22, 6);
+    g.lineTo(18, 14);
+
+    // Class-specific glyph
+    g.lineStyle(1.5, color, alpha * 0.6);
+    if (playerClass === 'HACKER') {
+      // Circuit lines on body
+      g.moveTo(-8, -2);
+      g.lineTo(-2, -2);
+      g.moveTo(-2, -2);
+      g.lineTo(-2, 4);
+      g.moveTo(2, 0);
+      g.lineTo(8, 0);
+    } else if (playerClass === 'WARRIOR') {
+      // Shield icon on body
+      g.moveTo(-6, -2);
+      g.lineTo(0, -6);
+      g.lineTo(6, -2);
+      g.lineTo(6, 6);
+      g.lineTo(0, 10);
+      g.lineTo(-6, 6);
+      g.lineTo(-6, -2);
+    } else {
+      // Ghost: dots
+      g.lineStyle(0);
+      g.beginFill(color, alpha * 0.5);
+      g.drawCircle(-4, 2, 2);
+      g.drawCircle(4, 2, 2);
+      g.endFill();
+    }
+
+    g.lineStyle(0);
+  }
+
+  /** Draw a unique geometric enemy sprite centered at (0,0). */
+  private drawEnemySprite(g: Graphics, enemyType: string, color: number): void {
+    const alpha = 0.8;
+    g.lineStyle(0);
+
+    if (enemyType === 'VIRUS_EXE' || enemyType === 'SPAM_BOT') {
+      // Pulsing hexagon with corruption lines
+      const r = 18;
+      g.lineStyle(2, color, alpha);
+      g.beginFill(color, 0.15);
+      const pts: [number, number][] = [];
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
+        pts.push([Math.cos(a) * r, Math.sin(a) * r]);
+      }
+      g.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
+      g.closePath();
+      g.endFill();
+      // Corruption lines
+      g.lineStyle(1, color, alpha * 0.5);
+      g.moveTo(-14, -6); g.lineTo(14, -6);
+      g.moveTo(-10, 2);  g.lineTo(10, 2);
+      g.moveTo(-7, 10);  g.lineTo(7, 10);
+    } else if (enemyType === 'FIREWALL_SYS' || enemyType === 'ELITE_FIREWALL') {
+      // Blue square fortress with brick pattern
+      g.lineStyle(3, color, alpha);
+      g.beginFill(color, 0.15);
+      g.drawRect(-20, -20, 40, 40);
+      g.endFill();
+      g.lineStyle(1, color, alpha * 0.4);
+      // Brick rows
+      for (let row = -14; row < 20; row += 8) {
+        g.moveTo(-20, row); g.lineTo(20, row);
+      }
+      g.moveTo(0, -20); g.lineTo(0, -12);
+      g.moveTo(-10, -12); g.lineTo(-10, -4);
+      g.moveTo(10, -4); g.lineTo(10, 4);
+      // Battlements
+      g.lineStyle(3, color, alpha);
+      for (let bx = -18; bx <= 10; bx += 14) {
+        g.moveTo(bx, -20); g.lineTo(bx, -26);
+        g.lineTo(bx + 8, -26); g.lineTo(bx + 8, -20);
+      }
+    } else if (enemyType === 'CORRUPTED_AI' || enemyType === 'ELITE_AI') {
+      // Glitching circle with data artifacts
+      g.lineStyle(2, color, alpha);
+      g.beginFill(color, 0.12);
+      g.drawCircle(0, 0, 20);
+      g.endFill();
+      // Glitch bars
+      g.lineStyle(0);
+      g.beginFill(color, 0.4);
+      g.drawRect(-20, -4, 8, 3);
+      g.drawRect(12, 6, 8, 3);
+      g.drawRect(-14, 10, 6, 3);
+      g.endFill();
+      // Inner cross
+      g.lineStyle(2, color, alpha * 0.6);
+      g.moveTo(-12, 0); g.lineTo(12, 0);
+      g.moveTo(0, -12); g.lineTo(0, 12);
+    } else if (enemyType === 'SYSTEM_OVERLORD') {
+      // Massive: triangle inside circle inside square, partial rotation suggestion
+      const sq = 26;
+      g.lineStyle(3, color, alpha);
+      g.beginFill(color, 0.1);
+      g.drawRect(-sq, -sq, sq * 2, sq * 2);
+      g.endFill();
+      g.lineStyle(2, color, alpha * 0.8);
+      g.beginFill(color, 0.08);
+      g.drawCircle(0, 0, 18);
+      g.endFill();
+      // Triangle inside
+      g.lineStyle(2, color, alpha);
+      g.moveTo(0, -13);
+      g.lineTo(12, 10);
+      g.lineTo(-12, 10);
+      g.lineTo(0, -13);
+      // Corner decorations
+      g.lineStyle(1.5, color, alpha * 0.5);
+      const corners: [number, number][] = [[-sq, -sq], [sq, -sq], [sq, sq], [-sq, sq]];
+      for (const [cx, cy] of corners) {
+        g.moveTo(cx, cy + Math.sign(cy) * -8); g.lineTo(cx, cy); g.lineTo(cx + Math.sign(cx) * -8, cy);
+      }
+    } else if (enemyType === 'ELITE_WORM') {
+      // Segmented worm body
+      g.lineStyle(2, color, alpha);
+      for (let seg = 0; seg < 3; seg++) {
+        const sx = (seg - 1) * 14;
+        g.beginFill(color, 0.2);
+        g.drawCircle(sx, 0, 9 - seg * 1.5);
+        g.endFill();
+        g.lineStyle(2, color, alpha);
+        g.drawCircle(sx, 0, 9 - seg * 1.5);
+      }
+      // Eyes
+      g.lineStyle(0);
+      g.beginFill(0xff0000, 0.9);
+      g.drawCircle(-14, -4, 3);
+      g.drawCircle(-14, 4, 3);
+      g.endFill();
+    } else {
+      // Generic: diamond shape
+      g.lineStyle(2, color, alpha);
+      g.beginFill(color, 0.2);
+      g.moveTo(0, -22);
+      g.lineTo(16, 0);
+      g.lineTo(0, 22);
+      g.lineTo(-16, 0);
+      g.lineTo(0, -22);
+      g.endFill();
+    }
+
+    g.lineStyle(0);
   }
 }
 

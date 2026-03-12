@@ -1,0 +1,30 @@
+CyberDeck - Screenshot Guide for Itch.io
+=========================================
+
+Recommended screenshot sizes: 1280x720 or 1920x1080
+
+Suggested moments to capture:
+1. MAIN MENU - The matrix rain background with the glowing CYBERDECK logo
+2. CLASS SELECT - Three class cards (HACKER / WARRIOR / GHOST)
+3. COMBAT - Mid-battle with cards in hand and enemy health bar
+4. CARD REWARD - Choosing a new card after defeating an enemy
+5. MAP SCREEN - The Neural Network node map
+6. BOSS FIGHT - SYSTEM_OVERLORD phase 2 with the red phase bar
+7. LEGENDARY CARD - GOD_PROTOCOL or INFINITE_LOOP in action
+8. WIN SCREEN - Run complete with stats panel
+
+Tips:
+- Use F12 DevTools to hide the URL bar for cleaner shots
+- The game looks best at 1920x1080 fullscreen
+- Enable particles in Settings for the best visual effects
+- Boss fights trigger dramatic phase transition animations
+
+For the itch.io cover image (630x500):
+- Use a screenshot of the combat screen with an epic legendary card visible
+- The neon green/cyan color scheme looks best against a dark background
+
+Upload order suggestion:
+1. Main menu screenshot (first impression)
+2. Combat screenshot (core gameplay)
+3. Map screenshot (roguelike structure)
+4. Boss fight screenshot (endgame tension)

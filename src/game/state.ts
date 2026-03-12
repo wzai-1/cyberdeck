@@ -76,6 +76,9 @@ export interface GameState {
   godProtocolUsed: boolean;        // GOD_PROTOCOL: once per run
   adminOverrideTurnsLeft: number;  // ADMIN_OVERRIDE: 0-cost turns remaining
 
+  // ---- Balance tracking (Sprint 7) ------------------------------------------
+  staticChainCount?: number;       // STATIC card: chain draw depth this turn (cap = 3)
+
   // ---- Persistence card state -----------------------------------------------
   pendingPersistenceCard?: Card;   // PERSISTENCE: card to return to hand
 
@@ -111,6 +114,7 @@ export interface GameState {
     type: EnemyType;
     patternStep: number;
     statusEffects: StatusEffect[];
+    floorMultiplier?: number; // damage/HP scaling for current floor
   };
   hand: Card[];
   deck: Card[];

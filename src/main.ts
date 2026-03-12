@@ -32,9 +32,6 @@ import {
   getDailyModifiers,
   getDailyClass,
   applyDailyModifiers,
-  loadDailyLeaderboard,
-  saveDailyLeaderboard,
-  addDailyLeaderboardEntry,
 } from './game/dailyChallenge';
 import type { GameState, PlayerClass, MapState } from './game/state';
 
@@ -48,6 +45,154 @@ const app = new Application({
 const root = document.getElementById('app');
 if (root) {
   root.appendChild(app.view as HTMLCanvasElement);
+}
+
+// ---- Visibility API: pause game loop when tab is hidden -------------------
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    app.ticker.stop();
+  } else {
+    app.ticker.start();
+  }
+});
+
+// ---- Mobile detection overlay ---------------------------------------------
+
+function showMobileWarning(): void {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = `
+    position: fixed; top: 0; left: 0; right: 0;
+    background: rgba(4,10,20,0.95);
+    border-bottom: 2px solid #ffaa00;
+    color: #ffaa00;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    text-align: center;
+    padding: 10px 16px;
+    z-index: 9500;
+    letter-spacing: 2px;
+  `;
+  overlay.textContent = '\u26A0 BEST EXPERIENCED ON DESKTOP \u2014 tap to dismiss';
+  overlay.addEventListener('click', () => {
+    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+  });
+  document.body.appendChild(overlay);
+}
+
+if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
+  showMobileWarning();
+}
+
+// ---- Error boundary -------------------------------------------------------
+
+window.addEventListener('error', (e) => {
+  const existing = document.getElementById('system-error-screen');
+  if (existing) return;
+  const errDiv = document.createElement('div');
+  errDiv.id = 'system-error-screen';
+  errDiv.style.cssText = `
+    position: fixed; inset: 0;
+    background: #050008;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    font-family: 'Courier New', monospace;
+    z-index: 99999;
+    color: #ff0044;
+  `;
+  errDiv.innerHTML = `
+    <div style="font-size:36px;font-weight:bold;letter-spacing:4px;margin-bottom:18px">SYSTEM ERROR</div>
+    <div style="font-size:13px;color:#884455;margin-bottom:28px;max-width:480px;text-align:center">${e.message ?? 'UNKNOWN FAULT'}</div>
+    <button onclick="location.reload()" style="
+      background:#0a0012; border:2px solid #ff0044; color:#ff0044;
+      font-family:'Courier New',monospace; font-size:16px; font-weight:bold;
+      padding:12px 32px; cursor:pointer; border-radius:8px; letter-spacing:2px;
+    ">[ RESTART ]</button>
+  `;
+  document.body.appendChild(errDiv);
+});
+
+// ---- Tutorial system -------------------------------------------------------
+
+const TUTORIAL_KEY = 'cyberdeck_tutorial';
+
+function isTutorialDone(): boolean {
+  try { return localStorage.getItem(TUTORIAL_KEY) === 'done'; } catch { return false; }
+}
+
+function markTutorialDone(): void {
+  try { localStorage.setItem(TUTORIAL_KEY, 'done'); } catch { /* */ }
+}
+
+const TUTORIAL_STEPS = [
+  'STEP 1/4 \u2014 CLICK A CARD TO PLAY IT',
+  'STEP 2/4 \u2014 CARDS COST MANA (\u25C6 diamonds)',
+  'STEP 3/4 \u2014 CLICK END TURN WHEN DONE',
+  'STEP 4/4 \u2014 BLOCK REDUCES INCOMING DAMAGE',
+];
+
+let tutorialStep = 0;
+let tutorialEl: HTMLDivElement | null = null;
+
+function showTutorialStep(step: number): void {
+  if (isTutorialDone() || step >= TUTORIAL_STEPS.length) {
+    hideTutorial();
+    markTutorialDone();
+    return;
+  }
+  if (tutorialEl && tutorialEl.parentNode) tutorialEl.parentNode.removeChild(tutorialEl);
+
+  const el = document.createElement('div');
+  tutorialEl = el;
+  el.style.cssText = `
+    position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+    background: rgba(4,12,22,0.97);
+    border: 2px solid #00ffcc;
+    border-radius: 10px;
+    padding: 12px 20px;
+    color: #00ffcc;
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    z-index: 7000;
+    box-shadow: 0 0 24px rgba(0,255,204,0.3);
+    letter-spacing: 2px;
+    display: flex; align-items: center; gap: 16px;
+  `;
+  const msg = document.createElement('span');
+  msg.textContent = TUTORIAL_STEPS[step] ?? '';
+  const skip = document.createElement('button');
+  skip.textContent = '[SKIP]';
+  skip.style.cssText = `
+    background: none; border: 1px solid #336655; color: #336655;
+    font-family: 'Courier New', monospace; font-size: 12px;
+    cursor: pointer; padding: 4px 10px; border-radius: 4px;
+  `;
+  skip.addEventListener('click', () => { hideTutorial(); markTutorialDone(); tutorialStep = 99; });
+  el.appendChild(msg);
+  el.appendChild(skip);
+  document.body.appendChild(el);
+}
+
+function hideTutorial(): void {
+  if (tutorialEl && tutorialEl.parentNode) tutorialEl.parentNode.removeChild(tutorialEl);
+  tutorialEl = null;
+}
+
+function advanceTutorial(): void {
+  if (isTutorialDone()) return;
+  tutorialStep += 1;
+  if (tutorialStep < TUTORIAL_STEPS.length) {
+    showTutorialStep(tutorialStep);
+  } else {
+    hideTutorial();
+    markTutorialDone();
+  }
+}
+
+function startTutorial(): void {
+  if (isTutorialDone()) return;
+  tutorialStep = 0;
+  showTutorialStep(0);
 }
 
 // ---- Systems ---------------------------------------------------------------
@@ -535,7 +680,7 @@ const mapRenderer = new MapRenderer(app, {
 
     if (node.type === 'combat') {
       const enemyType = enemyTypeForFloor(floor);
-      const enemy = createEnemy(enemyType);
+      const enemy = createEnemy(enemyType, floor);
       const fullDeck = [...state.deck, ...state.discard, ...state.hand];
 
       combatDamageTakenThisFight = 0;
@@ -572,6 +717,7 @@ const mapRenderer = new MapRenderer(app, {
       gameRenderer.animateDrawCards(state.hand.length);
       gameRenderer.render(state);
       showScreen('game');
+      startTutorial();
     } else if (node.type === 'shop') {
       const shopInventory = generateCardReward();
       const shopRelic = getRandomRelic(state.relics);
@@ -667,6 +813,7 @@ const gameRenderer = new GameRenderer(app, {
       state = playCard(state, cardId);
       checkCombatWin();
       gameRenderer.render(state);
+      advanceTutorial(); // move to step 2 after first card play
     });
   },
   onEndTurn: () => {
@@ -677,6 +824,7 @@ const gameRenderer = new GameRenderer(app, {
     if (dmg > 0) audio.playerHurt();
     checkCombatLose();
     gameRenderer.render(state);
+    advanceTutorial(); // move to step 4 after first end turn
   },
   onSelectCardReward: (cardId) => {
     state = selectCardReward(state, cardId);

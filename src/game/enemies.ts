@@ -1,4 +1,5 @@
 import type { EnemyType, EnemyIntent, StatusEffect } from './state';
+import { floorScaleMultiplier } from './balance';
 
 export interface EnemyPattern {
   intent: EnemyIntent;
@@ -126,12 +127,15 @@ export interface EnemyState {
   type: EnemyType;
   patternStep: number;
   statusEffects: StatusEffect[];
+  floorMultiplier?: number; // HP/damage scaling for current floor
 }
 
 // ---- Factory ----------------------------------------------------------------
 
-export function createEnemy(type: EnemyType): EnemyState {
-  const hp = HP_MAP[type];
+export function createEnemy(type: EnemyType, floor = 0): EnemyState {
+  const baseHp = HP_MAP[type];
+  const mult = floorScaleMultiplier(floor);
+  const hp = Math.round(baseHp * mult);
   const pattern = ENEMY_PATTERNS[type];
   const first = pattern[0];
 
@@ -144,7 +148,8 @@ export function createEnemy(type: EnemyType): EnemyState {
     intentTurn: 1,
     type,
     patternStep: 0,
-    statusEffects: []
+    statusEffects: [],
+    floorMultiplier: mult
   };
 }
 

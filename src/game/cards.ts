@@ -1,6 +1,7 @@
 import type { Card, GameState, StatusEffect } from './state';
 import { applyDamage, drawCards } from './state';
 import { applyStatusEffects } from './statusEffects';
+import { STATIC_CHAIN_MAX, INFINITE_LOOP_MAX_CARDS } from './balance';
 
 export type CardEffect = (state: GameState) => GameState;
 
@@ -250,6 +251,10 @@ const CARD_EFFECTS: Record<string, CardEffect> = {
 
   STATIC: (state) => {
     let next = dealDamageToEnemy(state, 1);
+    const chainCount = state.staticChainCount ?? 0;
+    if (chainCount >= STATIC_CHAIN_MAX) {
+      return { ...next, combatLog: [...next.combatLog, 'STATIC: 1 DMG (CHAIN CAP)'] };
+    }
     const staticInDeck = next.deck.findIndex((c) => c.name === 'STATIC');
     if (staticInDeck >= 0) {
       const staticCard = next.deck[staticInDeck];
@@ -257,6 +262,7 @@ const CARD_EFFECTS: Record<string, CardEffect> = {
         ...next,
         hand: [...next.hand, staticCard],
         deck: next.deck.filter((_, i) => i !== staticInDeck),
+        staticChainCount: chainCount + 1,
         combatLog: [...next.combatLog, 'STATIC: 1 DMG + DREW STATIC']
       };
     } else {
@@ -629,13 +635,16 @@ const CARD_EFFECTS: Record<string, CardEffect> = {
 
   INFINITE_LOOP: (state) => {
     const allCards = [...state.deck, ...state.discard];
+    const combined = [...state.hand, ...allCards];
+    const cappedHand = combined.slice(0, INFINITE_LOOP_MAX_CARDS);
+    const overflow = combined.slice(INFINITE_LOOP_MAX_CARDS);
     return {
       ...state,
-      hand: [...state.hand, ...allCards],
+      hand: cappedHand,
       deck: [],
-      discard: [],
+      discard: overflow,
       zeroCostTurn: true,
-      combatLog: [...state.combatLog, 'INFINITE LOOP: ALL CARDS IN HAND, FREE COST']
+      combatLog: [...state.combatLog, `INFINITE LOOP: ${cappedHand.length} CARDS IN HAND, FREE COST`]
     };
   },
 

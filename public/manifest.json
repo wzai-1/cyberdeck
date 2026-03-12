@@ -1,0 +1,25 @@
+{
+  "name": "CyberDeck - Cyberpunk Roguelike Deckbuilder",
+  "short_name": "CyberDeck",
+  "description": "A cyberpunk roguelike deckbuilder. Hack. Survive. Repeat.",
+  "start_url": "/cyberdeck/",
+  "display": "fullscreen",
+  "background_color": "#0a0a0f",
+  "theme_color": "#00ffcc",
+  "orientation": "landscape",
+  "icons": [
+    {
+      "src": "/cyberdeck/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/cyberdeck/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["games"]
+}

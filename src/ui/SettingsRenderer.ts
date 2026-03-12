@@ -243,7 +243,7 @@ export class SettingsRenderer {
     const updateValue = (globalX: number): void => {
       const localX = globalX - x;
       const newVal = Math.max(0, Math.min(100, Math.round((localX / trackW) * 100)));
-      (this.settings as Record<string, number>)[key] = newVal;
+      (this.settings as unknown as Record<string, number>)[key] = newVal;
       // Update visuals
       const fw = (newVal / 100) * trackW;
       fill.clear();
@@ -323,13 +323,13 @@ export class SettingsRenderer {
     this.uiLayer.addChild(stateText);
 
     toggleBg.on('pointerdown', () => {
-      (this.settings as Record<string, boolean>)[key] = !this.settings[key];
+      (this.settings as unknown as Record<string, boolean>)[key] = !this.settings[key];
       this.render();
     });
     knob.eventMode = 'static';
     knob.cursor = 'pointer';
     knob.on('pointerdown', () => {
-      (this.settings as Record<string, boolean>)[key] = !this.settings[key];
+      (this.settings as unknown as Record<string, boolean>)[key] = !this.settings[key];
       this.render();
     });
 

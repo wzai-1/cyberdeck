@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createRunStats, getMostUsedCard, getRunDuration, type RunStats } from '../game/runStats';
-import { createInitialState, type GameState } from '../game/state';
+import { createInitialState } from '../game/state';
 import { playCard, endPlayerTurn, startPlayerTurn } from '../game/combat';
 
 describe('runStats', () => {
