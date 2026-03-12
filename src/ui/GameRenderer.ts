@@ -49,6 +49,7 @@ export class GameRenderer {
   private effectsLayer: Container;
 
   private animations: Animation[] = [];
+  private _activeFlashes: Graphics[] = [];
   private lastState: GameState | null = null;
   private pulseTime = 0;
   private idleTime = 0;
@@ -118,6 +119,13 @@ export class GameRenderer {
     this.drawBackground(w, h);
     this.uiLayer.removeChildren();
     this.uiLayer.clear();
+
+    // Safety: purge any card-flash circles that somehow escaped their animation
+    this._activeFlashes.forEach(f => {
+      if (f.parent) f.parent.removeChild(f);
+      try { f.destroy({ children: true }); } catch { /* already destroyed */ }
+    });
+    this._activeFlashes = [];
 
     // Remove charge ring on each render; ticker recreates if still charging
     if (this.chargeRing) {
@@ -1362,11 +1370,17 @@ export class GameRenderer {
     flash.endFill();
     flash.filters = [new GlowFilter({ color: 0x00ffcc, distance: 30, outerStrength: 3, quality: 0.4 })];
     this.effectsLayer.addChild(flash);
+    // Track active flashes so render() can force-clean them
+    this._activeFlashes.push(flash);
 
     this.addAnimation(0.3, (p) => {
       flash.alpha = 1 - p;
       flash.scale.set(1 + p * 0.6);
-    }, () => { this.effectsLayer.removeChild(flash); });
+    }, () => {
+      if (flash.parent) flash.parent.removeChild(flash);
+      flash.destroy({ children: true });
+      this._activeFlashes = this._activeFlashes.filter(f => f !== flash);
+    });
   }
 
   private spawnVictoryParticles(x: number, y: number): void {
