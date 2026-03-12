@@ -4,12 +4,13 @@ import { GlowFilter } from '@pixi/filter-glow';
 export interface MainMenuHandlers {
   onNewRun: () => void;
   onContinue: () => void;
+  onDailyChallenge: () => void;
   onSettings: () => void;
   onAbout: () => void;
   hasSave: () => boolean;
 }
 
-const VERSION = 'v0.5.0';
+const VERSION = 'v0.6.0';
 const GLITCH_CHARS = '!@#$%^&*<>?/|\\01アイウエオカキクケコ░▒▓█';
 const MATRIX_COLS = 40;
 
@@ -251,10 +252,10 @@ export class MainMenuRenderer {
     const hasSave = this.handlers.hasSave();
 
     const buttons: Array<{ label: string; active: boolean; cb: () => void; color: number }> = [
-      { label: '[ NEW RUN ]',   active: true,    cb: () => this.handlers.onNewRun(),    color: 0x00ffcc },
-      { label: '[ CONTINUE ]',  active: hasSave, cb: () => this.handlers.onContinue(), color: 0x00ffcc },
-      { label: '[ SETTINGS ]',  active: true,    cb: () => this.handlers.onSettings(),  color: 0xffaa00 },
-      { label: '[ ABOUT ]',     active: true,    cb: () => this.handlers.onAbout(),     color: 0xaa66ff },
+      { label: '[ NEW RUN ]',     active: true,    cb: () => this.handlers.onNewRun(),           color: 0x00ffcc },
+      { label: '[ DAILY HACK ]',  active: true,    cb: () => this.handlers.onDailyChallenge(),   color: 0xff6600 },
+      { label: '[ CONTINUE ]',    active: hasSave, cb: () => this.handlers.onContinue(),         color: 0x00ffcc },
+      { label: '[ SETTINGS ]',    active: true,    cb: () => this.handlers.onSettings(),          color: 0xffaa00 },
     ];
 
     buttons.forEach((btn, i) => {

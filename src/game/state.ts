@@ -1,7 +1,8 @@
 export type EnemyType =
   | 'VIRUS_EXE' | 'FIREWALL_SYS' | 'CORRUPTED_AI'
   | 'SPAM_BOT' | 'TROJAN' | 'ROOTKIT'
-  | 'RANSOMWARE' | 'DEEPFAKE' | 'SYSTEM_OVERLORD';
+  | 'RANSOMWARE' | 'DEEPFAKE' | 'SYSTEM_OVERLORD'
+  | 'ELITE_FIREWALL' | 'ELITE_AI' | 'ELITE_WORM';
 
 export type EnemyIntent = 'attack' | 'defend' | 'charge' | 'debuff' | 'steal';
 export type StatusEffectType = 'vulnerable' | 'strength' | 'weak';
@@ -32,7 +33,7 @@ export interface Card {
   cost: number;
   type: 'attack' | 'skill';
   description: string;
-  rarity: 'common' | 'rare' | 'legendary';
+  rarity: 'common' | 'rare' | 'legendary' | 'curse';
   exhaust?: boolean;
 }
 
@@ -59,9 +60,31 @@ export interface GameState {
   firstAttackThisTurn: boolean; // for Ghost passive (first attack ×2)
   combatInvisible: boolean;     // Ghost Protocol relic — first enemy attack misses
   lastPlayerCardDamage: number; // for DEEPFAKE to copy
+  manaSpentThisTurn: number;    // for OVERLOAD card
+  darkPatternActive: boolean;   // DARK_PATTERN: triple damage this turn
+  zeroCostNextCard: boolean;    // OVERCLOCK2: next card costs 0
+  extraTurn: boolean;           // TIME_WARP: skip enemy turn once
+  invincibleThisTurn: boolean;  // GHOST_IN_MACHINE: block all damage this enemy turn
+  immuneToDebuff: boolean;      // ENCRYPT: block next debuff
+  lastCardPlayedName: string;   // for DUPLICATE card
+
+  // ---- Per-combat tracking --------------------------------------------------
+  hitsTakenThisCombat: number;           // for RETALIATE card
+  uniqueCardsPlayedThisCombat: string[]; // for NEURAL_STORM card
+
+  // ---- Per-run tracking -----------------------------------------------------
+  godProtocolUsed: boolean;        // GOD_PROTOCOL: once per run
+  adminOverrideTurnsLeft: number;  // ADMIN_OVERRIDE: 0-cost turns remaining
+
+  // ---- Persistence card state -----------------------------------------------
+  pendingPersistenceCard?: Card;   // PERSISTENCE: card to return to hand
 
   // ---- Boss state -----------------------------------------------------------
   bossPhase: number; // 1/2/3 for SYSTEM_OVERLORD
+
+  // ---- Daily challenge ------------------------------------------------------
+  isDaily: boolean;
+  dailyModifiers: string[];
 
   // ---- Run statistics -------------------------------------------------------
   runStats: RunStats;
@@ -163,7 +186,20 @@ export function createInitialState(): GameState {
     firstAttackThisTurn: true,
     combatInvisible: false,
     lastPlayerCardDamage: 0,
+    manaSpentThisTurn: 0,
+    darkPatternActive: false,
+    zeroCostNextCard: false,
+    extraTurn: false,
+    invincibleThisTurn: false,
+    immuneToDebuff: false,
+    lastCardPlayedName: '',
+    hitsTakenThisCombat: 0,
+    uniqueCardsPlayedThisCombat: [],
+    godProtocolUsed: false,
+    adminOverrideTurnsLeft: 0,
     bossPhase: 1,
+    isDaily: false,
+    dailyModifiers: [],
     runStats: createRunStats(),
     enemy: {
       hp: 50,

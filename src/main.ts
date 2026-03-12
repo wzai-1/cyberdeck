@@ -26,6 +26,16 @@ import {
   addLeaderboardEntry,
   buildEntry,
 } from './game/leaderboard';
+import {
+  getTodayString,
+  getDailySeedCode,
+  getDailyModifiers,
+  getDailyClass,
+  applyDailyModifiers,
+  loadDailyLeaderboard,
+  saveDailyLeaderboard,
+  addDailyLeaderboardEntry,
+} from './game/dailyChallenge';
 import type { GameState, PlayerClass, MapState } from './game/state';
 
 // ---- App setup -------------------------------------------------------------
@@ -443,6 +453,31 @@ const mainMenuRenderer = new MainMenuRenderer(app, {
     showScreen('class_select');
     classSelectRenderer.render();
   },
+  onDailyChallenge: () => {
+    audio.buttonClick();
+    const today = getTodayString();
+    const seed = today.split('-').reduce((acc, part) => acc * 100 + parseInt(part), 0);
+    const seedCode = getDailySeedCode(today);
+    const modifiers = getDailyModifiers(seed);
+    const cls = getDailyClass(seed);
+    let dailyState = createNewRun(cls);
+    dailyState = applyDailyModifiers(dailyState, modifiers, createCardByName);
+    dailyState = {
+      ...dailyState,
+      isDaily: true,
+      dailyModifiers: modifiers,
+      combatLog: [
+        ...dailyState.combatLog,
+        `DAILY HACK: ${seedCode}`,
+        `MODIFIERS: ${modifiers.join(', ')}`,
+      ],
+    };
+    state = dailyState;
+    combatDamageTakenThisFight = 0;
+    saveRun(state);
+    mapRenderer.render(state);
+    showScreen('map');
+  },
   onContinue: () => {
     audio.buttonClick();
     const saved = loadSavedRun();
@@ -520,6 +555,14 @@ const mapRenderer = new MapRenderer(app, {
           `TARGET ACQUIRED: ${enemyType}`,
         ],
         zeroCostTurn: false,
+        // Reset per-combat tracking
+        hitsTakenThisCombat: 0,
+        uniqueCardsPlayedThisCombat: [],
+        invincibleThisTurn: false,
+        extraTurn: false,
+        darkPatternActive: false,
+        adminOverrideTurnsLeft: 0,
+        pendingPersistenceCard: undefined,
       };
 
       combatState = startPlayerTurn(combatState);

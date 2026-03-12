@@ -1,8 +1,9 @@
 import type { GameState, Card } from './state';
 import { applyDamage, drawCards } from './state';
-import { getCardEffect, getEffectiveCost, generateCardReward } from './cards';
-import { advanceEnemyPattern } from './enemies';
+import { getCardEffect, getEffectiveCost, generateCardReward, processCurseDrawEffects } from './cards';
+import { advanceEnemyPattern, isEliteEnemy } from './enemies';
 import { applyStatusEffects, tickStatusEffects } from './statusEffects';
+import { getRandomRelic } from './relics';
 
 // Re-export utilities that tests import from this module
 export { applyDamage, drawCards };
@@ -11,6 +12,9 @@ export { applyDamage, drawCards };
 
 export function startPlayerTurn(state: GameState): GameState {
   const drawCount = state.relics.includes('memory_cache') ? 6 : 5;
+
+  // Decrement admin override turns
+  const adminOverrideTurnsLeft = Math.max(0, state.adminOverrideTurnsLeft - 1);
 
   let refreshed: GameState = {
     ...state,
@@ -23,7 +27,13 @@ export function startPlayerTurn(state: GameState): GameState {
     },
     cardsPlayedThisTurn: 0,
     firstAttackThisTurn: true,
-    zeroCostTurn: false
+    zeroCostTurn: false,
+    zeroCostNextCard: false,
+    manaSpentThisTurn: 0,
+    darkPatternActive: false,
+    invincibleThisTurn: false,
+    extraTurn: false,
+    adminOverrideTurnsLeft
   };
 
   // Warrior passive: +2 shield every turn
@@ -47,7 +57,25 @@ export function startPlayerTurn(state: GameState): GameState {
     };
   }
 
-  return drawCards(refreshed, drawCount);
+  // PERSISTENCE: return persistence card from discard to hand
+  if (refreshed.pendingPersistenceCard) {
+    const card = refreshed.pendingPersistenceCard;
+    const inDiscard = refreshed.discard.find((c) => c.id === card.id);
+    if (inDiscard) {
+      refreshed = {
+        ...refreshed,
+        hand: [...refreshed.hand, inDiscard],
+        discard: refreshed.discard.filter((c) => c.id !== card.id),
+        pendingPersistenceCard: undefined,
+        combatLog: [...refreshed.combatLog, 'PERSISTENCE: RETURNED TO HAND']
+      };
+    } else {
+      refreshed = { ...refreshed, pendingPersistenceCard: undefined };
+    }
+  }
+
+  const withCards = drawCards(refreshed, drawCount);
+  return processCurseDrawEffects(withCards);
 }
 
 // ---- Helper: move card -----------------------------------------------------
@@ -79,6 +107,11 @@ export function playCard(state: GameState, cardId: string): GameState {
     return state;
   }
 
+  // Curse cards are unplayable
+  if (card.rarity === 'curse') {
+    return state;
+  }
+
   // Determine effective cost, including Hacker passive
   let effectiveCost = getEffectiveCost(card, state);
   // Hacker passive: every 3rd card this turn (index 2, 5, 8…) costs 0
@@ -105,6 +138,13 @@ export function playCard(state: GameState, cardId: string): GameState {
     [card.name]: (state.runStats.cardUsage[card.name] ?? 0) + 1
   };
 
+  // Track unique cards played this combat
+  const uniqueCardsPlayedThisCombat = state.uniqueCardsPlayedThisCombat.includes(card.name)
+    ? state.uniqueCardsPlayedThisCombat
+    : [...state.uniqueCardsPlayedThisCombat, card.name];
+
+  const newManaSpent = state.manaSpentThisTurn + effectiveCost;
+
   let nextState: GameState = {
     ...state,
     player: {
@@ -114,6 +154,9 @@ export function playCard(state: GameState, cardId: string): GameState {
     cardsPlayedThisTurn: state.cardsPlayedThisTurn + 1,
     totalCardsPlayed: state.totalCardsPlayed + 1,
     overclockDouble: isOverclockCard,
+    zeroCostNextCard: false, // consume the zeroCostNextCard flag
+    manaSpentThisTurn: newManaSpent,
+    uniqueCardsPlayedThisCombat,
     runStats: {
       ...state.runStats,
       cardsPlayed: state.runStats.cardsPlayed + 1,
@@ -130,6 +173,7 @@ export function playCard(state: GameState, cardId: string): GameState {
   nextState = {
     ...nextState,
     lastPlayerCardDamage: damageDealt,
+    lastCardPlayedName: card.name,
     runStats: {
       ...nextState.runStats,
       damageDealt: nextState.runStats.damageDealt + damageDealt,
@@ -144,16 +188,29 @@ export function playCard(state: GameState, cardId: string): GameState {
   }
 
   if (nextState.enemy.hp <= 0) {
+    // Check if this is an elite enemy — drop a relic
+    let stateAfterElite = nextState;
+    if (isEliteEnemy(nextState.enemy.type)) {
+      const relic = getRandomRelic(nextState.relics);
+      if (relic) {
+        stateAfterElite = {
+          ...nextState,
+          relics: [...nextState.relics, relic.id],
+          combatLog: [...nextState.combatLog, `ELITE DROP: ${relic.name.toUpperCase()}!`]
+        };
+      }
+    }
+
     const rewardChoices = generateCardReward();
     return {
-      ...nextState,
+      ...stateAfterElite,
       phase: 'card_reward',
       cardReward: { choices: rewardChoices },
       runStats: {
-        ...nextState.runStats,
-        enemiesDefeated: nextState.runStats.enemiesDefeated + 1
+        ...stateAfterElite.runStats,
+        enemiesDefeated: stateAfterElite.runStats.enemiesDefeated + 1
       },
-      combatLog: [...nextState.combatLog, 'TARGET ELIMINATED']
+      combatLog: [...stateAfterElite.combatLog, 'TARGET ELIMINATED']
     };
   }
 
@@ -186,6 +243,16 @@ export function selectCardReward(state: GameState, cardId: string | null): GameS
 export function endPlayerTurn(state: GameState): GameState {
   if (state.phase !== 'player_turn') {
     return state;
+  }
+
+  // TIME_WARP: extraTurn skips enemy action, starts a new player turn
+  if (state.extraTurn) {
+    let nextState: GameState = {
+      ...state,
+      extraTurn: false,
+      combatLog: [...state.combatLog, 'TIME WARP: EXTRA TURN — ENEMY SKIPPED']
+    };
+    return startPlayerTurn(nextState);
   }
 
   let nextState: GameState = { ...state, phase: 'enemy_turn' };
@@ -223,13 +290,31 @@ export function endPlayerTurn(state: GameState): GameState {
     enemyType === 'SYSTEM_OVERLORD' && nextState.bossPhase >= 3 && intent === 'defend'
       ? 'attack'
       : intent;
-  const effectiveIntentValue =
-    effectiveIntent !== intent ? intentValue : intentValue; // value unchanged; strength is applied via status
+
+  // ---- ELITE_WORM: attack scales with player shield -----------------------
+  let attackValue = intentValue;
+  if (enemyType === 'ELITE_WORM' && effectiveIntent === 'attack') {
+    attackValue = intentValue + nextState.player.shield;
+  }
+
+  // ---- ELITE_WORM: inflict Weak on player every turn ----------------------
+  if (enemyType === 'ELITE_WORM') {
+    const prevWeak = nextState.player.statusEffects.find((e) => e.type === 'weak');
+    const otherEffects = nextState.player.statusEffects.filter((e) => e.type !== 'weak');
+    nextState = {
+      ...nextState,
+      player: {
+        ...nextState.player,
+        statusEffects: [...otherEffects, { type: 'weak', value: (prevWeak?.value ?? 0) + 2 }]
+      },
+      combatLog: [...nextState.combatLog, 'ELITE WORM: APPLIED WEAK 2']
+    };
+  }
 
   // ---- Execute enemy action ------------------------------------------------
   if (effectiveIntent === 'attack') {
     let finalDmg = applyStatusEffects(
-      effectiveIntentValue,
+      attackValue,
       nextState.enemy.statusEffects,
       nextState.player.statusEffects
     );
@@ -258,12 +343,20 @@ export function endPlayerTurn(state: GameState): GameState {
         combatInvisible: false,
         combatLog: [...nextState.combatLog, `${enemyType}: ATTACK MISSED — GHOST PROTOCOL ACTIVE`]
       };
+    } else if (nextState.invincibleThisTurn) {
+      // GHOST_IN_MACHINE: invincible this turn
+      nextState = {
+        ...nextState,
+        invincibleThisTurn: false,
+        combatLog: [...nextState.combatLog, `${enemyType}: ATTACK BLOCKED — GHOST IN MACHINE`]
+      };
     } else {
       const result = applyDamage(nextState.player.hp, finalDmg, nextState.player.shield);
       const hpLost = Math.max(0, nextState.player.hp - result.hp);
       nextState = {
         ...nextState,
         player: { ...nextState.player, hp: result.hp, shield: result.shield },
+        hitsTakenThisCombat: hpLost > 0 ? nextState.hitsTakenThisCombat + 1 : nextState.hitsTakenThisCombat,
         runStats: {
           ...nextState.runStats,
           damageTaken: nextState.runStats.damageTaken + hpLost
@@ -280,6 +373,15 @@ export function endPlayerTurn(state: GameState): GameState {
           combatLog: [...nextState.combatLog, 'NEURAL FEEDBACK: 3 DMG']
         };
       }
+    }
+
+    // ELITE_FIREWALL: gains shield = damage dealt when it attacks
+    if (enemyType === 'ELITE_FIREWALL') {
+      nextState = {
+        ...nextState,
+        enemy: { ...nextState.enemy, shield: nextState.enemy.shield + attackValue },
+        combatLog: [...nextState.combatLog, `ELITE FIREWALL: +${attackValue} SHIELD FROM ATTACK`]
+      };
     }
 
     // SYSTEM_OVERLORD Phase 3: gain +5 strength per attack (berserk stacking)
@@ -313,20 +415,28 @@ export function endPlayerTurn(state: GameState): GameState {
       combatLog: [...nextState.combatLog, `${enemyType}: CHARGING...`]
     };
   } else if (effectiveIntent === 'debuff') {
-    // TROJAN: apply Weak to player for intentValue turns
-    const prevWeak = nextState.player.statusEffects.find((e) => e.type === 'weak');
-    const otherEffects = nextState.player.statusEffects.filter((e) => e.type !== 'weak');
-    nextState = {
-      ...nextState,
-      player: {
-        ...nextState.player,
-        statusEffects: [
-          ...otherEffects,
-          { type: 'weak', value: (prevWeak?.value ?? 0) + intentValue }
-        ]
-      },
-      combatLog: [...nextState.combatLog, `${enemyType}: APPLIED WEAK ${intentValue} TURNS`]
-    };
+    if (nextState.immuneToDebuff) {
+      nextState = {
+        ...nextState,
+        immuneToDebuff: false,
+        combatLog: [...nextState.combatLog, `${enemyType}: DEBUFF BLOCKED — ENCRYPT ACTIVE`]
+      };
+    } else {
+      // TROJAN / ELITE_WORM: apply Weak to player for intentValue turns
+      const prevWeak = nextState.player.statusEffects.find((e) => e.type === 'weak');
+      const otherEffects = nextState.player.statusEffects.filter((e) => e.type !== 'weak');
+      nextState = {
+        ...nextState,
+        player: {
+          ...nextState.player,
+          statusEffects: [
+            ...otherEffects,
+            { type: 'weak', value: (prevWeak?.value ?? 0) + intentValue }
+          ]
+        },
+        combatLog: [...nextState.combatLog, `${enemyType}: APPLIED WEAK ${intentValue} TURNS`]
+      };
+    }
   } else if (effectiveIntent === 'steal') {
     // ROOTKIT: steal 1 random card from player's hand to discard
     if (nextState.hand.length > 0) {
@@ -342,6 +452,20 @@ export function endPlayerTurn(state: GameState): GameState {
       nextState = {
         ...nextState,
         combatLog: [...nextState.combatLog, `${enemyType}: STEAL — NO CARDS IN HAND`]
+      };
+    }
+  }
+
+  // ---- ELITE_AI: every 2 intentTurns, mini virus attacks (10 dmg) ---------
+  if (enemyType === 'ELITE_AI' && nextState.enemy.intentTurn % 2 === 0) {
+    if (!nextState.invincibleThisTurn) {
+      const virusResult = applyDamage(nextState.player.hp, 10, nextState.player.shield);
+      const hpLost = Math.max(0, nextState.player.hp - virusResult.hp);
+      nextState = {
+        ...nextState,
+        player: { ...nextState.player, hp: virusResult.hp, shield: virusResult.shield },
+        hitsTakenThisCombat: hpLost > 0 ? nextState.hitsTakenThisCombat + 1 : nextState.hitsTakenThisCombat,
+        combatLog: [...nextState.combatLog, 'ELITE AI: MINI VIRUS ATTACK: 10 DMG']
       };
     }
   }

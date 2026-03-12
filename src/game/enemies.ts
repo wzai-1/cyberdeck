@@ -58,6 +58,29 @@ export const ENEMY_PATTERNS: Record<EnemyType, EnemyPattern[]> = {
   SYSTEM_OVERLORD: [
     { intent: 'attack', value: 15 },
     { intent: 'defend', value: 20 }
+  ],
+
+  // ---- Elite enemies (odd floors, drop relic on death) ---------------------
+  // ELITE_FIREWALL: gains shield = damage dealt whenever it attacks
+  ELITE_FIREWALL: [
+    { intent: 'attack', value: 14 },
+    { intent: 'defend', value: 10 },
+    { intent: 'attack', value: 14 }
+  ],
+
+  // ELITE_AI: immune to Vulnerable; every 2 turns summons mini virus (10 dmg)
+  ELITE_AI: [
+    { intent: 'attack', value: 12 },
+    { intent: 'charge', value: 0 },
+    { intent: 'attack', value: 16 },
+    { intent: 'defend', value: 8 }
+  ],
+
+  // ELITE_WORM: Inflicts Weak each turn; attack scales with player shield
+  ELITE_WORM: [
+    { intent: 'attack', value: 10 },
+    { intent: 'attack', value: 10 },
+    { intent: 'debuff', value: 1 }
   ]
 };
 
@@ -72,20 +95,24 @@ const HP_MAP: Record<EnemyType, number> = {
   ROOTKIT:         75,
   RANSOMWARE:      85,
   DEEPFAKE:        80,
-  SYSTEM_OVERLORD: 150
+  SYSTEM_OVERLORD: 150,
+  ELITE_FIREWALL:  120,
+  ELITE_AI:        110,
+  ELITE_WORM:      100
 };
 
 // ---- Floor tier map ---------------------------------------------------------
 
 export const TIER_ENEMIES: Record<number, EnemyType[]> = {
   0: ['VIRUS_EXE', 'SPAM_BOT'],
-  1: ['FIREWALL_SYS', 'TROJAN'],
+  1: ['FIREWALL_SYS', 'TROJAN', 'ELITE_FIREWALL'],
   2: ['CORRUPTED_AI', 'ROOTKIT'],
-  3: ['RANSOMWARE', 'DEEPFAKE'],
+  3: ['RANSOMWARE', 'DEEPFAKE', 'ELITE_AI', 'ELITE_WORM'],
   4: ['SYSTEM_OVERLORD']
 };
 
 export const BOSS_TYPES: EnemyType[] = ['SYSTEM_OVERLORD'];
+export const ELITE_TYPES: EnemyType[] = ['ELITE_FIREWALL', 'ELITE_AI', 'ELITE_WORM'];
 
 // ---- EnemyState interface --------------------------------------------------
 
@@ -141,4 +168,9 @@ export function advanceEnemyPattern(enemy: EnemyState): EnemyState {
 export function enemyTypeForFloor(floor: number): EnemyType {
   const options = TIER_ENEMIES[floor] ?? ['SYSTEM_OVERLORD'];
   return options[Math.floor(Math.random() * options.length)];
+}
+
+/** Returns true if this enemy is an elite (drops a relic on death) */
+export function isEliteEnemy(type: EnemyType): boolean {
+  return ELITE_TYPES.includes(type);
 }
