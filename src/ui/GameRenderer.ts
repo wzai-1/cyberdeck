@@ -4,6 +4,7 @@ import type { Card, GameState } from '../game/state';
 import { BOSS_TYPES } from '../game/enemies';
 import { getRelicById } from '../game/relics';
 import { getMostUsedCard, getRunDuration } from '../game/runStats';
+import { createEnemySprite, type AnimatedEnemySprite } from './sprites/EnemySprites';
 
 // ---- Types -----------------------------------------------------------------
 
@@ -27,6 +28,14 @@ const CARD_W = 140;
 const CARD_H = 190;
 const CARD_SPACING = 152;
 
+// Card type colors (border stripe)
+const CARD_TYPE_COLORS: Record<string, number> = {
+  attack:  0xff3322,
+  skill:   0x2266ff,
+  power:   0xaa44ff,
+  curse:   0x220011,
+};
+
 // ---- GameRenderer ----------------------------------------------------------
 
 export class GameRenderer {
@@ -45,6 +54,11 @@ export class GameRenderer {
 
   // Persistent per-frame effects
   private chargeRing: Graphics | null = null;
+
+  // Persistent animated enemy sprite
+  private enemySprite: AnimatedEnemySprite | null = null;
+  private lastEnemyType = '';
+  private lastBossPhase = 0;
 
   // Tooltip layer (always on top)
   private tooltipLayer: Container;
@@ -78,6 +92,7 @@ export class GameRenderer {
       this.idleTime += dt;
       this.updateAnimations(dt);
       this.updateChargeEffect();
+      this.updateEnemySprite();
     });
   }
 
@@ -111,6 +126,9 @@ export class GameRenderer {
     this.discardX = 52;
     this.discardY = h - 52;
 
+    // Ensure enemy sprite matches current enemy
+    this.syncEnemySprite(state);
+
     if (state.phase === 'win' || state.phase === 'lose') {
       this.renderEndScreen(state, w, h);
       return;
@@ -120,14 +138,15 @@ export class GameRenderer {
       return;
     }
 
-    // Boss bar at very top (always visible in boss fight)
     const isBoss = BOSS_TYPES.includes(state.enemy.type);
+
+    // Boss bar at very top (boss fight only)
     if (isBoss) {
       this.renderBossBar(state, w, h);
     }
 
-    this.renderEnemy(state, w, h, isBoss);
-    this.renderPlayer(state, w, h);
+    this.renderEnemyUI(state, w, h, isBoss);
+    this.renderPlayerStrip(state, w, h);
     this.renderRelics(state, w, h);
     this.renderHand(state, w, h);
     this.renderEndTurnButton(state, w, h);
@@ -140,7 +159,7 @@ export class GameRenderer {
   animateCardPlay(card: Card, position: { x: number; y: number }, onDone: () => void): void {
     const cardView = this.createCardGraphic(card, true);
     const targetX = this.app.screen.width * 0.5;
-    const targetY = this.app.screen.height * 0.45;
+    const targetY = this.app.screen.height * 0.4;
     const startX = position.x;
     const startY = position.y;
     cardView.pivot.set(CARD_W * 0.5, CARD_H * 0.5);
@@ -199,231 +218,395 @@ export class GameRenderer {
     }
   }
 
+  // ---- Enemy sprite sync ---------------------------------------------------
+
+  private syncEnemySprite(state: GameState): void {
+    const type = state.enemy.type;
+    const phase = state.bossPhase;
+
+    // Hide sprite when not in combat
+    if (state.phase === 'win' || state.phase === 'lose' ||
+        state.phase === 'card_reward') {
+      if (this.enemySprite) {
+        this.enemySprite.container.visible = false;
+      }
+      return;
+    }
+
+    if (type !== this.lastEnemyType || phase !== this.lastBossPhase) {
+      // Remove old sprite
+      if (this.enemySprite) {
+        this.effectsLayer.removeChild(this.enemySprite.container);
+        this.enemySprite = null;
+      }
+      // Create new sprite
+      this.enemySprite = createEnemySprite(type, phase);
+      this.effectsLayer.addChild(this.enemySprite.container);
+      this.lastEnemyType = type;
+      this.lastBossPhase = phase;
+    }
+
+    if (this.enemySprite) {
+      this.enemySprite.container.visible = true;
+    }
+  }
+
+  private updateEnemySprite(): void {
+    if (!this.enemySprite || !this.lastState) return;
+    if (!this.rootContainer.visible) return;
+
+    const w = this.app.screen.width;
+    const h = this.app.screen.height;
+    const isBoss = BOSS_TYPES.includes(this.lastState.enemy.type);
+
+    // Enemy sprite centered at w*0.5, in the enemy zone
+    const baseY = isBoss ? h * 0.24 : h * 0.22;
+    const bobOffset = Math.sin(this.idleTime * 1.8 + 1.5) * 2;
+
+    this.enemySprite.container.x = w * 0.5;
+    this.enemySprite.container.y = baseY + bobOffset;
+    this.enemySprite.update(this.idleTime, this.lastState.bossPhase);
+  }
+
   // ---- Private rendering ---------------------------------------------------
 
   private renderBossBar(state: GameState, w: number, _h: number): void {
     const bh = 36;
-    const bx = 0;
-    const by = 0;
-    const bossColor = 0xff0044;
     const phase = state.bossPhase;
-    const phaseColors: Record<number, number> = { 1: 0xff0044, 2: 0xff4400, 3: 0xff0000 };
-    const barColor = phaseColors[phase] ?? bossColor;
+    const phaseColors: Record<number, number> = { 1: 0xff0044, 2: 0xaa44ff, 3: 0xffffff };
+    const barColor = phaseColors[phase] ?? 0xff0044;
 
-    // Dramatic background strip
     const strip = new Graphics();
     strip.beginFill(0x11000a, 0.98);
     strip.lineStyle(2, barColor, 0.8);
-    strip.drawRect(bx, by, w, bh);
+    strip.drawRect(0, 0, w, bh);
     strip.endFill();
     strip.filters = [new GlowFilter({ color: barColor, distance: 18, outerStrength: 2.5, quality: 0.4 })];
     this.uiLayer.addChild(strip);
 
-    // HP fill
     const ratio = Math.max(0, state.enemy.hp / state.enemy.maxHp);
     if (ratio > 0) {
       const fill = new Graphics();
-      fill.beginFill(barColor, 0.85);
-      fill.drawRect(bx + 2, by + 2, (w - 4) * ratio, bh - 4);
+      fill.beginFill(barColor, 0.75);
+      fill.drawRect(2, 2, (w - 4) * ratio, bh - 4);
       fill.endFill();
-      fill.filters = [new GlowFilter({ color: barColor, distance: 10, outerStrength: 2, quality: 0.3 })];
       this.uiLayer.addChild(fill);
     }
 
-    // Boss name
-    const nameText = new Text(`⚡ ${state.enemy.type.replace('_', ' ')} ⚡`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 14,
-      fill: 0xffffff,
-      fontWeight: 'bold'
+    const nameText = new Text(`⚡ ${state.enemy.type.replace(/_/g, ' ')} ⚡  PHASE ${phase}`, new TextStyle({
+      fontFamily: 'Courier New', fontSize: 13, fill: 0xffffff, fontWeight: 'bold',
     }));
     nameText.anchor.set(0.5, 0.5);
     nameText.x = w * 0.5;
-    nameText.y = by + bh * 0.5;
+    nameText.y = bh * 0.5;
     this.uiLayer.addChild(nameText);
 
-    // HP label
     const hpLabel = new Text(`${state.enemy.hp} / ${state.enemy.maxHp}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 12,
-      fill: 0xffffff,
-      fontWeight: 'bold'
+      fontFamily: 'Courier New', fontSize: 12, fill: 0xffffff, fontWeight: 'bold',
     }));
     hpLabel.anchor.set(1, 0.5);
     hpLabel.x = w - 12;
-    hpLabel.y = by + bh * 0.5;
+    hpLabel.y = bh * 0.5;
     this.uiLayer.addChild(hpLabel);
-
-    // Phase badge
-    const phaseText = new Text(`PHASE ${phase}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 11,
-      fill: barColor,
-      fontWeight: 'bold'
-    }));
-    phaseText.x = 12;
-    phaseText.anchor.set(0, 0.5);
-    phaseText.y = by + bh * 0.5;
-    phaseText.filters = [new GlowFilter({ color: barColor, distance: 8, outerStrength: 2, quality: 0.3 })];
-    this.uiLayer.addChild(phaseText);
   }
 
-  private renderEnemy(state: GameState, w: number, h: number, isBoss: boolean): void {
-    const ex = w * 0.68;
-    const eyBase = isBoss ? h * 0.32 : h * 0.27;
-    const ey = eyBase + Math.sin(this.idleTime * 1.8 + 1.5) * 3; // idle float (offset from player)
+  /** Renders enemy UI elements (name, HP bar, intent) — NOT the sprite itself */
+  private renderEnemyUI(state: GameState, w: number, h: number, isBoss: boolean): void {
+    const ex = w * 0.5;
+    const topOffset = isBoss ? 36 : 0;
 
-    const isCharging = state.enemy.intent === 'charge';
-    const isDebuff = state.enemy.intent === 'debuff';
-    const isSteal = state.enemy.intent === 'steal';
-    const boxColor = isCharging ? 0xff4400 : isBoss ? 0xff0044 : 0xff0066;
+    // --- Enemy name (BIG, above sprite) ---
+    const nameColor = state.enemy.intent === 'charge' ? 0xff4400
+      : isBoss ? 0xff0044
+      : 0xff3366;
 
-    const box = new Graphics();
-    box.beginFill(0x110011, 0.92);
-    box.lineStyle(3, boxColor, 1);
-    box.drawRoundedRect(-115, -75, 230, 150, 12);
-    box.endFill();
-    box.x = ex;
-    box.y = ey;
-    box.filters = [new GlowFilter({ color: boxColor, distance: 16, outerStrength: isCharging || isBoss ? 3 : 1.8, quality: 0.5 })];
-    this.uiLayer.addChild(box);
+    const displayName = state.enemy.type.replace(/_/g, ' ');
+    const nameSuffix = isBoss ? ' [BOSS]'
+      : ['ELITE_FIREWALL', 'ELITE_AI', 'ELITE_WORM'].includes(state.enemy.type) ? ' [ELITE]'
+      : '';
 
-    // Enemy sprite
-    const spriteG = new Graphics();
-    spriteG.x = ex;
-    spriteG.y = ey - 8;
-    this.drawEnemySprite(spriteG, state.enemy.type, boxColor);
-    this.uiLayer.addChild(spriteG);
-
-    const nameText = new Text(state.enemy.type, new TextStyle({
+    const nameText = new Text(`${displayName}${nameSuffix}`, new TextStyle({
       fontFamily: 'Courier New',
-      fontSize: isBoss ? 14 : 17,
-      fill: boxColor,
-      fontWeight: 'bold'
+      fontSize: isBoss ? 22 : 19,
+      fill: nameColor,
+      fontWeight: 'bold',
+      letterSpacing: 2,
     }));
     nameText.anchor.set(0.5, 0.5);
     nameText.x = ex;
-    nameText.y = ey - 56;
+    nameText.y = topOffset + h * 0.055;
+    nameText.filters = [new GlowFilter({ color: nameColor, distance: 14, outerStrength: isBoss ? 3 : 2, quality: 0.4 })];
     this.uiLayer.addChild(nameText);
 
-    // Only show enemy HP bar if it's not a boss (boss has full-width bar at top)
-    if (!isBoss) {
-      this.drawHpBar(ex - 85, ey + 28, 170, 12, state.enemy.hp, state.enemy.maxHp, 0xff0066);
-    }
+    // --- HP bar BELOW the sprite ---
+    const hpBarY = isBoss ? h * 0.40 : h * 0.37;
+    const hpBarW = isBoss ? 340 : 280;
+    this.drawHpBarCentered(ex, hpBarY, hpBarW, 16, state.enemy.hp, state.enemy.maxHp, nameColor);
 
+    // Enemy shield (if any)
     if (state.enemy.shield > 0) {
-      this.drawShieldBadge(ex + 90, ey + 30, state.enemy.shield, 0xff66aa);
+      const shText = new Text(`◈ ${state.enemy.shield}`, new TextStyle({
+        fontFamily: 'Courier New', fontSize: 14, fill: 0x66aaff, fontWeight: 'bold',
+      }));
+      shText.anchor.set(0, 0.5);
+      shText.x = ex + hpBarW * 0.5 + 12;
+      shText.y = hpBarY + 8;
+      this.uiLayer.addChild(shText);
     }
 
-    this.drawIntent(state, ex, ey - 100, isDebuff, isSteal);
+    // --- Intent box (BIG, obvious, below HP bar) ---
+    const intentY = hpBarY + 34;
+    this.drawBigIntent(state, ex, intentY);
 
     // Status effects on enemy
-    this.drawStatusEffects(state.enemy.statusEffects, ex - 85, ey - 30);
+    this.drawStatusEffects(state.enemy.statusEffects, ex - 100, topOffset + h * 0.04);
   }
 
-  private renderPlayer(state: GameState, w: number, h: number): void {
-    const px = w * 0.3;
-    const py = h * 0.27 + Math.sin(this.idleTime * 1.8) * 3; // gentle idle float
+  /** Big intent box: colored border, large icon, clear value */
+  private drawBigIntent(state: GameState, cx: number, y: number): void {
+    const { intent, intentValue } = state.enemy;
+
+    const intentConfig: Record<string, { color: number; icon: string; label: string }> = {
+      attack:  { color: 0xff2222, icon: '⚔',  label: `${intentValue}` },
+      defend:  { color: 0x2266ff, icon: '◈',  label: `${intentValue}` },
+      charge:  { color: 0xff9900, icon: '⚡', label: 'CHARGING' },
+      debuff:  { color: 0xaa44ff, icon: '↓',  label: 'DEBUFF' },
+      steal:   { color: 0xffaa00, icon: '◆',  label: 'STEAL' },
+    };
+
+    const cfg = intentConfig[intent] ?? { color: 0x888888, icon: '?', label: '?' };
+    const { color, icon, label } = cfg;
+    const isCharging = intent === 'charge';
+
+    // Box background
+    const boxW = 200;
+    const boxH = 58;
+    const box = new Graphics();
+    box.beginFill(0x080a14, 0.96);
+    box.lineStyle(3, color, 1);
+    box.drawRoundedRect(-boxW * 0.5, 0, boxW, boxH, 10);
+    box.endFill();
+    box.x = cx;
+    box.y = y;
+    const glowStrength = isCharging ? 4 : 2.5;
+    box.filters = [new GlowFilter({ color, distance: 20, outerStrength: glowStrength, quality: 0.5 })];
+    this.uiLayer.addChild(box);
+
+    // Intent icon (large)
+    const iconText = new Text(icon, new TextStyle({
+      fontFamily: 'Courier New', fontSize: 26, fill: color, fontWeight: 'bold',
+    }));
+    iconText.anchor.set(0.5, 0.5);
+    iconText.x = cx - 48;
+    iconText.y = y + boxH * 0.5;
+    this.uiLayer.addChild(iconText);
+
+    // Intent value/label
+    const valStyle = new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: label.length > 5 ? 16 : 22,
+      fill: color,
+      fontWeight: 'bold',
+    });
+    const valText = new Text(label, valStyle);
+    valText.anchor.set(0.5, 0.5);
+    valText.x = cx + 18;
+    valText.y = y + boxH * 0.5;
+    if (isCharging) {
+      valText.alpha = 0.5 + Math.abs(Math.sin(this.pulseTime * 3)) * 0.5;
+    }
+    this.uiLayer.addChild(valText);
+
+    // Small INTENT label above box
+    const labelText = new Text('NEXT ACTION', new TextStyle({
+      fontFamily: 'Courier New', fontSize: 9, fill: color,
+    }));
+    labelText.alpha = 0.6;
+    labelText.anchor.set(0.5, 1);
+    labelText.x = cx;
+    labelText.y = y;
+    this.uiLayer.addChild(labelText);
+  }
+
+  /** Player strip: sprite left, HP/Shield/Mana/Turn in a horizontal row */
+  private renderPlayerStrip(state: GameState, w: number, h: number): void {
+    const stripY = h * 0.50;
+    const stripH = 90;
 
     const classColors: Record<string, number> = {
       HACKER: 0x00ffcc,
       WARRIOR: 0xff6644,
-      GHOST: 0xaa44ff
+      GHOST: 0xaa44ff,
     };
     const playerColor = classColors[state.playerClass] ?? 0x00ffcc;
 
-    const box = new Graphics();
-    box.beginFill(0x001118, 0.92);
-    box.lineStyle(3, playerColor, 1);
-    box.drawRoundedRect(-115, -75, 230, 150, 12);
-    box.endFill();
-    box.x = px;
-    box.y = py;
-    box.filters = [new GlowFilter({ color: playerColor, distance: 16, outerStrength: 1.8, quality: 0.5 })];
-    this.uiLayer.addChild(box);
+    // Strip background
+    const stripBg = new Graphics();
+    stripBg.beginFill(0x050a14, 0.88);
+    stripBg.lineStyle(1.5, playerColor, 0.25);
+    stripBg.drawRoundedRect(10, stripY, w - 20, stripH, 10);
+    stripBg.endFill();
+    this.uiLayer.addChild(stripBg);
 
-    // Player sprite
+    // Player sprite (left side)
+    const px = 70;
+    const py = stripY + stripH * 0.5 + Math.sin(this.idleTime * 1.8) * 2;
     const playerSpriteG = new Graphics();
     playerSpriteG.x = px;
-    playerSpriteG.y = py - 8;
+    playerSpriteG.y = py;
     this.drawPlayerSprite(playerSpriteG, state.playerClass, playerColor);
     this.uiLayer.addChild(playerSpriteG);
 
-    const nameText = new Text(`[${state.playerClass}]`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 15,
-      fill: playerColor,
-      fontWeight: 'bold'
+    // Class label above player sprite
+    const classText = new Text(`[${state.playerClass}]`, new TextStyle({
+      fontFamily: 'Courier New', fontSize: 10, fill: playerColor, fontWeight: 'bold',
     }));
-    nameText.anchor.set(0.5, 0.5);
-    nameText.x = px;
-    nameText.y = py - 56;
-    this.uiLayer.addChild(nameText);
+    classText.anchor.set(0.5, 1);
+    classText.x = px;
+    classText.y = stripY + 12;
+    this.uiLayer.addChild(classText);
 
-    this.drawHpBar(px - 85, py + 28, 170, 12, state.player.hp, state.player.maxHp, playerColor);
-
-    if (state.player.shield > 0) {
-      this.drawShieldBadge(px - 90, py + 30, state.player.shield, 0x66ffee);
-    }
-
-    // Ghost Protocol active indicator
+    // Ghost: invisible indicator
     if (state.combatInvisible) {
       const invisText = new Text('INVISIBLE', new TextStyle({
-        fontFamily: 'Courier New',
-        fontSize: 9,
-        fill: 0xaa44ff
+        fontFamily: 'Courier New', fontSize: 8, fill: 0xaa44ff,
       }));
-      invisText.anchor.set(0.5, 0.5);
+      invisText.anchor.set(0.5, 0);
       invisText.x = px;
-      invisText.y = py + 14;
+      invisText.y = stripY + stripH - 18;
       invisText.filters = [new GlowFilter({ color: 0xaa44ff, distance: 6, outerStrength: 1.5, quality: 0.3 })];
       this.uiLayer.addChild(invisText);
     }
 
-    const manaText = new Text(`\u25C6 ${state.player.mana} / ${state.player.maxMana}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 15,
-      fill: 0xffaa00,
-      fontWeight: 'bold'
+    // HP section
+    const hpX = 120;
+    const hpLabelText = new Text('HP', new TextStyle({
+      fontFamily: 'Courier New', fontSize: 11, fill: playerColor,
     }));
-    manaText.anchor.set(0.5, 0.5);
-    manaText.x = px;
-    manaText.y = py + 58;
-    this.uiLayer.addChild(manaText);
+    hpLabelText.anchor.set(0, 0.5);
+    hpLabelText.x = hpX;
+    hpLabelText.y = stripY + 26;
+    this.uiLayer.addChild(hpLabelText);
 
-    // Status effects on player
-    this.drawStatusEffects(state.player.statusEffects, px - 85, py - 30);
+    const hpBarW = Math.min(240, w * 0.28);
+    this.drawHpBar(hpX + 26, stripY + 18, hpBarW, 14, state.player.hp, state.player.maxHp, playerColor);
+
+    // Shield icon + number (below HP)
+    if (state.player.shield > 0) {
+      const shieldText = new Text(`◈ ${state.player.shield}`, new TextStyle({
+        fontFamily: 'Courier New', fontSize: 15, fill: 0x66ddff, fontWeight: 'bold',
+      }));
+      shieldText.anchor.set(0, 0.5);
+      shieldText.x = hpX;
+      shieldText.y = stripY + 56;
+      shieldText.filters = [new GlowFilter({ color: 0x66ddff, distance: 8, outerStrength: 1.5, quality: 0.3 })];
+      this.uiLayer.addChild(shieldText);
+    } else {
+      // Grayed-out shield placeholder
+      const shieldGray = new Text('◈ 0', new TextStyle({
+        fontFamily: 'Courier New', fontSize: 13, fill: 0x334455,
+      }));
+      shieldGray.anchor.set(0, 0.5);
+      shieldGray.x = hpX;
+      shieldGray.y = stripY + 56;
+      this.uiLayer.addChild(shieldGray);
+    }
+
+    // Status effects (to the right of shield)
+    this.drawStatusEffects(state.player.statusEffects, hpX + 60, stripY + 50);
+
+    // Mana diamonds
+    const manaStartX = hpX + hpBarW + 50;
+    const manaY = stripY + stripH * 0.5;
+    this.drawManaDiamonds(state.player.mana, state.player.maxMana, manaStartX, manaY);
+
+    // Turn counter
+    const turnX = manaStartX + Math.max(4, state.player.maxMana) * 26 + 20;
+    const turnText = new Text(`TURN\n${state.turn}`, new TextStyle({
+      fontFamily: 'Courier New', fontSize: 12, fill: 0x335566, align: 'center',
+    }));
+    turnText.anchor.set(0.5, 0.5);
+    turnText.x = turnX + 22;
+    turnText.y = manaY;
+    this.uiLayer.addChild(turnText);
+
+    // Floor indicator
+    if (state.mapState) {
+      const floor = state.mapState.currentFloor + 1;
+      const floorText = new Text(`FLOOR\n${floor}/5`, new TextStyle({
+        fontFamily: 'Courier New', fontSize: 12, fill: 0x445566, align: 'center',
+      }));
+      floorText.anchor.set(0.5, 0.5);
+      floorText.x = turnX + 72;
+      floorText.y = manaY;
+      this.uiLayer.addChild(floorText);
+    }
+
+    // Gold display
+    const goldText = new Text(`◆${state.player.gold}`, new TextStyle({
+      fontFamily: 'Courier New', fontSize: 11, fill: 0xffaa00,
+    }));
+    goldText.anchor.set(1, 0.5);
+    goldText.x = w - 20;
+    goldText.y = stripY + 26;
+    this.uiLayer.addChild(goldText);
 
     // Neural link charges
     if (state.player.neuralLinkCharges > 0) {
-      const nlText = new Text(`NEURAL\u00D7${state.player.neuralLinkCharges}`, new TextStyle({
-        fontFamily: 'Courier New',
-        fontSize: 11,
-        fill: 0xaa44ff
+      const nlText = new Text(`NEURAL×${state.player.neuralLinkCharges}`, new TextStyle({
+        fontFamily: 'Courier New', fontSize: 10, fill: 0xaa44ff,
       }));
-      nlText.x = px + 50;
-      nlText.y = py - 30;
+      nlText.anchor.set(1, 0.5);
+      nlText.x = w - 20;
+      nlText.y = stripY + 56;
       this.uiLayer.addChild(nlText);
+    }
+  }
+
+  /** Mana as individual diamond icons ◆ filled / ◇ empty */
+  private drawManaDiamonds(mana: number, maxMana: number, startX: number, cy: number): void {
+    const label = new Text('MANA', new TextStyle({
+      fontFamily: 'Courier New', fontSize: 10, fill: 0xffaa00,
+    }));
+    label.anchor.set(0, 0.5);
+    label.x = startX;
+    label.y = cy - 16;
+    this.uiLayer.addChild(label);
+
+    const maxShow = Math.max(maxMana, 1);
+    for (let i = 0; i < maxShow; i++) {
+      const filled = i < mana;
+      const diamText = new Text(filled ? '◆' : '◇', new TextStyle({
+        fontFamily: 'Courier New',
+        fontSize: 20,
+        fill: filled ? 0xffaa00 : 0x443311,
+        fontWeight: 'bold',
+      }));
+      diamText.anchor.set(0, 0.5);
+      diamText.x = startX + i * 24;
+      diamText.y = cy;
+      if (filled) {
+        diamText.filters = [new GlowFilter({ color: 0xffaa00, distance: 8, outerStrength: 1.5, quality: 0.3 })];
+      }
+      this.uiLayer.addChild(diamText);
     }
   }
 
   private renderRelics(state: GameState, w: number, h: number): void {
     if (state.relics.length === 0) return;
 
-    const px = w * 0.3;
-    const py = h * 0.27;
-    const startX = px - 85;
-    const relicY = py + 75;
+    const relicY = h * 0.50 + 90 + 8; // just below player strip
     const iconSize = 22;
     const gap = 28;
+    let startX = 120;
 
     state.relics.forEach((relicId, i) => {
       const relic = getRelicById(relicId);
       if (!relic) return;
 
       const rx = startX + i * gap;
+      if (rx + iconSize > w - 10) return; // overflow guard
 
-      // Icon background
       const bg = new Graphics();
       bg.beginFill(0x050a12, 0.9);
       bg.lineStyle(1.5, relic.color, 0.85);
@@ -435,16 +618,15 @@ export class GameRenderer {
       this.uiLayer.addChild(bg);
 
       const sym = new Text(relic.symbol, new TextStyle({
-        fontFamily: 'Courier New',
-        fontSize: 7,
-        fill: relic.color,
-        fontWeight: 'bold'
+        fontFamily: 'Courier New', fontSize: 7, fill: relic.color, fontWeight: 'bold',
       }));
       sym.anchor.set(0.5, 0.5);
       sym.x = rx + iconSize * 0.5;
       sym.y = relicY + iconSize * 0.5;
       this.uiLayer.addChild(sym);
     });
+
+    void startX; // suppress unused
   }
 
   private renderHand(state: GameState, w: number, h: number): void {
@@ -456,12 +638,6 @@ export class GameRenderer {
     const totalW = (totalCards - 1) * spacing;
     const baseCenterX = w * 0.5;
     const baseY = h * 0.72;
-
-    // Determine if a card is free due to Hacker passive
-    const hackerFreeIdx = state.playerClass === 'HACKER' && state.cardsPlayedThisTurn % 3 === 2
-      ? -1 // not exactly per-card, handled via cost display
-      : -1;
-    void hackerFreeIdx; // suppress unused warning
 
     state.hand.forEach((card, i) => {
       const t = totalCards > 1 ? i / (totalCards - 1) : 0.5;
@@ -483,6 +659,8 @@ export class GameRenderer {
       const origY = cy;
       const origRot = angleRad;
 
+      const typeColor = CARD_TYPE_COLORS[card.type] ?? CARD_TYPE_COLORS.skill;
+
       cardView.eventMode = 'static';
       cardView.cursor = 'pointer';
 
@@ -491,7 +669,7 @@ export class GameRenderer {
         cardView.y = origY - 32;
         cardView.rotation = 0;
         cardView.zIndex = 100;
-        cardView.filters = [new GlowFilter({ color: 0x00ffcc, distance: 28, outerStrength: 4, quality: 0.5 })];
+        cardView.filters = [new GlowFilter({ color: typeColor, distance: 28, outerStrength: 4, quality: 0.5 })];
         this.showCardTooltip(card, cx, origY - 32 - CARD_H * 0.5 - 14);
       });
       cardView.on('pointerout', () => {
@@ -499,14 +677,14 @@ export class GameRenderer {
         cardView.y = origY;
         cardView.rotation = origRot;
         cardView.zIndex = i;
-        cardView.filters = [new GlowFilter({ color: 0x00ffcc, distance: 12, outerStrength: 1.8, quality: 0.4 })];
+        cardView.filters = [new GlowFilter({ color: typeColor, distance: 12, outerStrength: 1.8, quality: 0.4 })];
         this.hideCardTooltip();
       });
       cardView.on('pointerdown', () => {
         const bounds = cardView.getBounds();
         this.handlers.onCardClick(card.id, {
           x: bounds.x + bounds.width * 0.5,
-          y: bounds.y + bounds.height * 0.5
+          y: bounds.y + bounds.height * 0.5,
         });
       });
 
@@ -523,55 +701,62 @@ export class GameRenderer {
     const btn = new Graphics();
     btn.beginFill(0x111122, 1);
     btn.lineStyle(3, color, 1);
-    btn.drawRoundedRect(0, 0, 158, 50, 10);
+    btn.drawRoundedRect(0, 0, 170, 54, 10);
     btn.endFill();
-    btn.x = w - 192;
-    btn.y = h * 0.82;
-    btn.filters = [new GlowFilter({ color, distance: 12, outerStrength: active ? 2 : 0.5, quality: 0.4 })];
+    btn.x = w - 196;
+    btn.y = h * 0.83;
+    btn.filters = [new GlowFilter({ color, distance: 12, outerStrength: active ? 2.5 : 0.5, quality: 0.4 })];
 
     if (active) {
       btn.eventMode = 'static';
       btn.cursor = 'pointer';
       btn.on('pointerdown', () => this.handlers.onEndTurn());
-      btn.on('pointerover', () => btn.scale.set(1.05));
+      btn.on('pointerover', () => btn.scale.set(1.06));
       btn.on('pointerout', () => btn.scale.set(1.0));
     }
 
-    const label = new Text('END TURN', new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 15,
-      fill: color,
-      fontWeight: 'bold'
+    const label = new Text('END TURN ▶', new TextStyle({
+      fontFamily: 'Courier New', fontSize: 16, fill: color, fontWeight: 'bold',
     }));
     label.anchor.set(0.5, 0.5);
-    label.x = btn.x + 79;
-    label.y = btn.y + 25;
+    label.x = btn.x + 85;
+    label.y = btn.y + 27;
 
     this.uiLayer.addChild(btn);
     this.uiLayer.addChild(label);
-
-    const turnText = new Text(`TURN ${state.turn}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 11,
-      fill: 0x335566
-    }));
-    turnText.anchor.set(0.5, 0);
-    turnText.x = btn.x + 79;
-    turnText.y = btn.y + 54;
-    this.uiLayer.addChild(turnText);
   }
 
-  private renderCombatLog(state: GameState, _w: number, h: number): void {
+  /** Combat log on the RIGHT side of screen, showing last 5 events */
+  private renderCombatLog(state: GameState, w: number, h: number): void {
+    const logW = 230;
+    const logX = w - logW - 8;
+    const logY = h * 0.50 + 98; // below player strip
     const entries = state.combatLog.slice(-5);
+    const lineH = 18;
+    const logH = entries.length * lineH + 16;
+
+    // Log panel background
+    const bg = new Graphics();
+    bg.beginFill(0x040810, 0.82);
+    bg.lineStyle(1, 0x224433, 0.5);
+    bg.drawRoundedRect(0, 0, logW, logH, 6);
+    bg.endFill();
+    bg.x = logX;
+    bg.y = logY;
+    this.uiLayer.addChild(bg);
+
     entries.forEach((entry, idx) => {
-      const text = new Text(entry, new TextStyle({
-        fontFamily: 'Courier New',
-        fontSize: 11,
-        fill: 0x55bbcc
+      // Truncate long lines
+      const maxChars = 28;
+      const display = entry.length > maxChars ? entry.substring(0, maxChars - 1) + '…' : entry;
+      const alpha = 0.3 + (idx / Math.max(entries.length - 1, 1)) * 0.65;
+
+      const text = new Text(display, new TextStyle({
+        fontFamily: 'Courier New', fontSize: 10, fill: 0x55bbcc,
       }));
-      text.alpha = 0.35 + (idx / (entries.length - 1 || 1)) * 0.65;
-      text.x = 22;
-      text.y = h * 0.56 + idx * 17;
+      text.alpha = alpha;
+      text.x = logX + 8;
+      text.y = logY + 8 + idx * lineH;
       this.uiLayer.addChild(text);
     });
   }
@@ -595,21 +780,14 @@ export class GameRenderer {
     }
 
     const countText = new Text(`${count}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 13,
-      fill: color,
-      fontWeight: 'bold'
+      fontFamily: 'Courier New', fontSize: 13, fill: color, fontWeight: 'bold',
     }));
     countText.anchor.set(0.5, 0.5);
     countText.x = cx;
     countText.y = cy;
     this.uiLayer.addChild(countText);
 
-    const lbl = new Text(label, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 9,
-      fill: color
-    }));
+    const lbl = new Text(label, new TextStyle({ fontFamily: 'Courier New', fontSize: 9, fill: color }));
     lbl.alpha = 0.7;
     lbl.anchor.set(0.5, 0);
     lbl.x = cx;
@@ -633,10 +811,7 @@ export class GameRenderer {
     this.uiLayer.addChild(overlay);
 
     const titleText = new Text(title, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 40,
-      fill: color,
-      fontWeight: 'bold'
+      fontFamily: 'Courier New', fontSize: 40, fill: color, fontWeight: 'bold',
     }));
     titleText.anchor.set(0.5, 0.5);
     titleText.x = w * 0.5;
@@ -645,9 +820,7 @@ export class GameRenderer {
     this.uiLayer.addChild(titleText);
 
     const sub = new Text(isWin ? 'NEURAL NETWORK COMPROMISED' : 'CONNECTION TERMINATED', new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 13,
-      fill: color
+      fontFamily: 'Courier New', fontSize: 13, fill: color,
     }));
     sub.alpha = 0.65;
     sub.anchor.set(0.5, 0.5);
@@ -655,7 +828,7 @@ export class GameRenderer {
     sub.y = h * 0.17;
     this.uiLayer.addChild(sub);
 
-    // ---- Run Stats Panel ---------------------------------------------------
+    // Run stats panel
     const stats = state.runStats;
     const mostUsed = getMostUsedCard(stats);
     const duration = getRunDuration(stats);
@@ -669,7 +842,7 @@ export class GameRenderer {
       `BEST HIT         ${stats.bestHit}`,
       `MOST USED CARD   ${mostUsed}`,
       `GOLD EARNED      ${stats.goldEarned}`,
-      `RUN TIME         ${duration}`
+      `RUN TIME         ${duration}`,
     ];
 
     const panelW = Math.min(w * 0.55, 380);
@@ -685,9 +858,7 @@ export class GameRenderer {
     this.uiLayer.addChild(panel);
 
     const panelTitle = new Text('[ RUN STATISTICS ]', new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 11,
-      fill: color
+      fontFamily: 'Courier New', fontSize: 11, fill: color,
     }));
     panelTitle.alpha = 0.5;
     panelTitle.anchor.set(0.5, 0);
@@ -697,9 +868,7 @@ export class GameRenderer {
 
     statLines.forEach((line, i) => {
       const statText = new Text(line, new TextStyle({
-        fontFamily: 'Courier New',
-        fontSize: 12,
-        fill: i % 2 === 0 ? 0x88bbcc : 0x66aabb
+        fontFamily: 'Courier New', fontSize: 12, fill: i % 2 === 0 ? 0x88bbcc : 0x66aabb,
       }));
       statText.x = panelX + 18;
       statText.y = panelY + 22 + i * 22;
@@ -721,10 +890,7 @@ export class GameRenderer {
     btn.on('pointerout', () => btn.scale.set(1.0));
 
     const label = new Text('[ NEW RUN ]', new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 18,
-      fill: color,
-      fontWeight: 'bold'
+      fontFamily: 'Courier New', fontSize: 18, fill: color, fontWeight: 'bold',
     }));
     label.anchor.set(0.5, 0.5);
     label.x = btn.x + 100;
@@ -742,10 +908,7 @@ export class GameRenderer {
     this.uiLayer.addChild(overlay);
 
     const title = new Text('CHOOSE UPGRADE', new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 28,
-      fill: 0x00ffcc,
-      fontWeight: 'bold'
+      fontFamily: 'Courier New', fontSize: 28, fill: 0x00ffcc, fontWeight: 'bold',
     }));
     title.anchor.set(0.5, 0.5);
     title.x = w * 0.5;
@@ -764,17 +927,9 @@ export class GameRenderer {
       cardView.y = cy;
       cardView.eventMode = 'static';
       cardView.cursor = 'pointer';
-      cardView.on('pointerover', () => {
-        cardView.scale.set(1.1);
-        cardView.y = cy - 20;
-      });
-      cardView.on('pointerout', () => {
-        cardView.scale.set(1.0);
-        cardView.y = cy;
-      });
-      cardView.on('pointerdown', () => {
-        this.handlers.onSelectCardReward(card.id);
-      });
+      cardView.on('pointerover', () => { cardView.scale.set(1.1); cardView.y = cy - 20; });
+      cardView.on('pointerout', () => { cardView.scale.set(1.0); cardView.y = cy; });
+      cardView.on('pointerdown', () => { this.handlers.onSelectCardReward(card.id); });
       this.uiLayer.addChild(cardView);
       cx += CARD_W + 30;
     });
@@ -789,14 +944,12 @@ export class GameRenderer {
     skipBtn.eventMode = 'static';
     skipBtn.cursor = 'pointer';
     skipBtn.on('pointerdown', () => this.handlers.onSelectCardReward(null));
-    skipBtn.on('pointerover', () => skipBtn.alpha = 0.7);
-    skipBtn.on('pointerout', () => skipBtn.alpha = 1.0);
+    skipBtn.on('pointerover', () => { skipBtn.alpha = 0.7; });
+    skipBtn.on('pointerout', () => { skipBtn.alpha = 1.0; });
     this.uiLayer.addChild(skipBtn);
 
     const skipLabel = new Text('[ SKIP ]', new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 14,
-      fill: 0x556677
+      fontFamily: 'Courier New', fontSize: 14, fill: 0x556677,
     }));
     skipLabel.anchor.set(0.5, 0.5);
     skipLabel.x = skipBtn.x + 75;
@@ -805,6 +958,12 @@ export class GameRenderer {
   }
 
   // ---- Helpers: layout elements --------------------------------------------
+
+  /** Draw a HP bar centered at cx, at y position */
+  private drawHpBarCentered(cx: number, y: number, bw: number, bh: number, hp: number, maxHp: number, color: number): void {
+    const x = cx - bw * 0.5;
+    this.drawHpBar(x, y, bw, bh, hp, maxHp, color);
+  }
 
   private drawHpBar(x: number, y: number, bw: number, bh: number, hp: number, maxHp: number, color: number): void {
     const ratio = Math.max(0, Math.min(1, hp / maxHp));
@@ -816,111 +975,21 @@ export class GameRenderer {
     this.uiLayer.addChild(bg);
 
     if (ratio > 0) {
+      const fillColor = ratio > 0.5 ? color : ratio > 0.25 ? 0xffaa00 : 0xff2222;
       const fill = new Graphics();
-      fill.beginFill(color);
+      fill.beginFill(fillColor);
       fill.drawRoundedRect(x, y, bw * ratio, bh, 4);
       fill.endFill();
-      fill.filters = [new GlowFilter({ color, distance: 8, outerStrength: 1.5, quality: 0.3 })];
+      fill.filters = [new GlowFilter({ color: fillColor, distance: 8, outerStrength: 1.5, quality: 0.3 })];
       this.uiLayer.addChild(fill);
     }
 
     const txt = new Text(`${hp}/${maxHp}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 11,
-      fill: color,
-      fontWeight: 'bold'
+      fontFamily: 'Courier New', fontSize: 11, fill: color, fontWeight: 'bold',
     }));
     txt.x = x + bw + 7;
     txt.y = y - 1;
     this.uiLayer.addChild(txt);
-  }
-
-  private drawShieldBadge(x: number, y: number, shield: number, color: number): void {
-    const txt = new Text(`\u25A0 ${shield}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 12,
-      fill: color
-    }));
-    txt.anchor.set(0.5, 0.5);
-    txt.x = x;
-    txt.y = y;
-    this.uiLayer.addChild(txt);
-  }
-
-  private drawIntent(
-    state: GameState,
-    x: number,
-    y: number,
-    isDebuff: boolean,
-    isSteal: boolean
-  ): void {
-    const { intent, intentValue } = state.enemy;
-    const color = intent === 'attack' ? 0xff0066
-      : intent === 'charge' ? 0xff4400
-      : intent === 'debuff' ? 0x8844ff
-      : intent === 'steal' ? 0xffaa00
-      : 0x00ffcc;
-
-    const ic = new Graphics();
-    ic.x = x;
-    ic.y = y;
-
-    if (intent === 'attack') {
-      ic.lineStyle(3, color, 1);
-      ic.moveTo(-10, 12);
-      ic.lineTo(0, -12);
-      ic.lineTo(10, 12);
-      ic.moveTo(0, -12);
-      ic.lineTo(0, 14);
-    } else if (intent === 'charge') {
-      ic.lineStyle(3, color, 1);
-      for (let t = 0; t < 3; t++) {
-        ic.moveTo(-8 + t * 8, -12);
-        ic.lineTo(-2 + t * 8, 0);
-        ic.lineTo(-8 + t * 8, 12);
-      }
-    } else if (isDebuff) {
-      // Downward arrow (applying debuff)
-      ic.lineStyle(3, color, 1);
-      ic.moveTo(0, -12);
-      ic.lineTo(0, 12);
-      ic.lineTo(-8, 4);
-      ic.moveTo(0, 12);
-      ic.lineTo(8, 4);
-    } else if (isSteal) {
-      // Grabbing hand shape (simplified)
-      ic.lineStyle(3, color, 1);
-      ic.moveTo(-10, -8);
-      ic.lineTo(10, -8);
-      ic.moveTo(-10, 0);
-      ic.lineTo(10, 0);
-      ic.moveTo(0, -8);
-      ic.lineTo(0, 12);
-    } else {
-      // Defend
-      ic.lineStyle(3, color, 1);
-      ic.beginFill(0x0a1a22, 0.8);
-      ic.drawRoundedRect(-14, -14, 28, 32, 6);
-      ic.endFill();
-    }
-
-    const label = intent === 'charge' ? 'CHARGING'
-      : intent === 'debuff' ? 'DEBUFF'
-      : intent === 'steal' ? 'STEAL'
-      : `${intentValue}`;
-
-    const valText = new Text(label, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: label.length > 4 ? 10 : 12,
-      fill: color,
-      fontWeight: 'bold'
-    }));
-    valText.anchor.set(0.5, 0.5);
-    valText.x = 0;
-    valText.y = 30;
-    ic.addChild(valText);
-
-    this.uiLayer.addChild(ic);
   }
 
   private drawStatusEffects(effects: GameState['player']['statusEffects'], x: number, y: number): void {
@@ -929,9 +998,9 @@ export class GameRenderer {
     effects.forEach((e, i) => {
       const txt = new Text(
         `${e.type.substring(0, 4).toUpperCase()}${e.type !== 'strength' ? `(${e.value})` : `+${e.value}`}`,
-        new TextStyle({ fontFamily: 'Courier New', fontSize: 9, fill: colors[e.type] ?? 0xaaaaaa })
+        new TextStyle({ fontFamily: 'Courier New', fontSize: 9, fill: colors[e.type] ?? 0xaaaaaa }),
       );
-      txt.x = x + i * 50;
+      txt.x = x + i * 52;
       txt.y = y;
       this.uiLayer.addChild(txt);
     });
@@ -940,105 +1009,179 @@ export class GameRenderer {
   // ---- Card graphics -------------------------------------------------------
 
   private createCardGraphic(card: Card, isGhost: boolean): Graphics {
+    // Border color by rarity
     const rarityColors: Record<string, number> = {
-      common: 0x00ffcc,
-      rare: 0xaa44ff,
-      legendary: 0xffaa00
+      common:    0x00ffcc,
+      rare:      0xaa44ff,
+      legendary: 0xffaa00,
+      curse:     0x880000,
     };
     const borderColor = rarityColors[card.rarity] ?? 0x00ffcc;
 
+    // Left stripe color by card type
+    const stripeColor = CARD_TYPE_COLORS[card.type] ?? CARD_TYPE_COLORS.skill;
+
     const g = new Graphics();
+
+    // Card background
     g.beginFill(0x090e1a, isGhost ? 0.88 : 1);
     g.lineStyle(2.5, borderColor, 1);
     g.drawRoundedRect(0, 0, CARD_W, CARD_H, 12);
     g.endFill();
 
-    const stripeColor = card.type === 'attack' ? 0x220011 : 0x001122;
-    g.beginFill(stripeColor, 0.7);
-    g.drawRoundedRect(4, 4, CARD_W - 8, 28, 6);
+    // LEFT BORDER STRIPE (type color) — 5px wide
+    g.lineStyle(0);
+    g.beginFill(stripeColor, 0.85);
+    g.drawRoundedRect(0, 0, 5, CARD_H, 12);
     g.endFill();
 
-    g.lineStyle(1, borderColor, 0.07);
-    for (let row = 0; row < 3; row++) {
-      g.moveTo(10, 82 + row * 22);
-      g.lineTo(50 + row * 15, 82 + row * 22);
-      g.moveTo(60 + row * 15, 82 + row * 22);
-      g.lineTo(CARD_W - 10, 82 + row * 22);
+    // Legendary: gold shimmer band
+    if (card.rarity === 'legendary') {
+      const shimmer = new Graphics();
+      shimmer.beginFill(0xffaa00, 0.08 + Math.sin(this.pulseTime * 3) * 0.04);
+      shimmer.drawRoundedRect(0, 0, CARD_W, CARD_H, 12);
+      shimmer.endFill();
+      shimmer.lineStyle(2, 0xffaa00, 0.6 + Math.sin(this.pulseTime * 3) * 0.3);
+      shimmer.drawRoundedRect(0, 0, CARD_W, CARD_H, 12);
+      g.addChild(shimmer);
     }
 
+    // Header stripe
+    const headerColor = card.type === 'attack' ? 0x22000a : card.rarity === 'curse' ? 0x110000 : 0x001122;
+    g.beginFill(headerColor, 0.75);
+    g.drawRoundedRect(5, 4, CARD_W - 10, 30, 6);
+    g.endFill();
+
+    // Glow filter
     g.filters = [new GlowFilter({ color: borderColor, distance: 10, outerStrength: 1.5, quality: 0.35 })];
 
+    // Card name (bold, clear)
     const nameText = new Text(card.name, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 13,
-      fill: borderColor,
-      fontWeight: 'bold'
+      fontFamily: 'Courier New', fontSize: 12, fill: borderColor, fontWeight: 'bold',
     }));
     nameText.x = 9;
     nameText.y = 9;
     g.addChild(nameText);
 
+    // Cost: big circle top-LEFT (move to left per sprint spec)
     const costBg = new Graphics();
     costBg.beginFill(0x060c14, 0.95);
     costBg.lineStyle(2, 0xffaa00, 0.9);
-    costBg.drawCircle(0, 0, 13);
+    costBg.drawCircle(0, 0, 14);
     costBg.endFill();
-    costBg.x = CARD_W - 17;
-    costBg.y = 17;
+    costBg.x = 22;
+    costBg.y = CARD_H - 20;
     g.addChild(costBg);
 
     const costText = new Text(`${card.cost}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 13,
-      fill: 0xffaa00,
-      fontWeight: 'bold'
+      fontFamily: 'Courier New', fontSize: 14, fill: 0xffaa00, fontWeight: 'bold',
     }));
     costText.anchor.set(0.5, 0.5);
-    costText.x = CARD_W - 17;
-    costText.y = 17;
+    costText.x = 22;
+    costText.y = CARD_H - 20;
     g.addChild(costText);
 
+    // Card type tag
+    const typeColor = stripeColor;
     const typeTag = new Text(card.type.toUpperCase(), new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 9,
-      fill: card.type === 'attack' ? 0xff6688 : 0x44ccff
+      fontFamily: 'Courier New', fontSize: 9, fill: typeColor,
     }));
-    typeTag.alpha = 0.8;
+    typeTag.alpha = 0.85;
     typeTag.x = 9;
     typeTag.y = 36;
     g.addChild(typeTag);
 
+    // Card icon (top-right): drawn with Graphics
+    this.drawCardIcon(g, card.type, card.rarity, CARD_W - 22, 22, borderColor);
+
+    // Separator
     const sep = new Graphics();
     sep.lineStyle(1, borderColor, 0.25);
-    sep.moveTo(8, 50);
-    sep.lineTo(CARD_W - 8, 50);
+    sep.moveTo(8, 52);
+    sep.lineTo(CARD_W - 8, 52);
     g.addChild(sep);
 
+    // Description (readable, 12px)
     const desc = new Text(card.description, new TextStyle({
       fontFamily: 'Courier New',
-      fontSize: 11,
+      fontSize: 12,
       fill: 0xaaddee,
       wordWrap: true,
-      wordWrapWidth: CARD_W - 20
+      wordWrapWidth: CARD_W - 22,
+      lineHeight: 16,
     }));
     desc.x = 9;
     desc.y = 57;
     g.addChild(desc);
 
+    // Curse: skull in corner
+    if (card.rarity === 'curse') {
+      const skull = new Text('☠', new TextStyle({
+        fontFamily: 'Courier New', fontSize: 16, fill: 0x880000,
+      }));
+      skull.anchor.set(1, 1);
+      skull.x = CARD_W - 8;
+      skull.y = CARD_H - 8;
+      g.addChild(skull);
+    }
+
     if (card.exhaust) {
       const exhaustText = new Text('EXHAUST', new TextStyle({
-        fontFamily: 'Courier New',
-        fontSize: 9,
-        fill: 0xff4444
+        fontFamily: 'Courier New', fontSize: 9, fill: 0xff4444,
       }));
       exhaustText.alpha = 0.8;
       exhaustText.anchor.set(0.5, 1);
-      exhaustText.x = CARD_W * 0.5;
-      exhaustText.y = CARD_H - 8;
+      exhaustText.x = CARD_W * 0.5 + 12;
+      exhaustText.y = CARD_H - 6;
       g.addChild(exhaustText);
     }
 
     return g;
+  }
+
+  /** Small 16x16 icon drawn in top-right of card */
+  private drawCardIcon(g: Graphics, type: string, rarity: string, cx: number, cy: number, color: number): void {
+    const icon = new Graphics();
+    icon.lineStyle(1.5, color, 0.75);
+
+    if (type === 'attack') {
+      // Sword: vertical line with crossguard
+      icon.moveTo(cx, cy - 10); icon.lineTo(cx, cy + 8);
+      icon.moveTo(cx - 6, cy - 2); icon.lineTo(cx + 6, cy - 2);
+      icon.lineStyle(0);
+      icon.beginFill(color, 0.8);
+      icon.drawPolygon([cx, cy - 10, cx - 3, cy - 4, cx + 3, cy - 4]);
+      icon.endFill();
+    } else if (rarity === 'legendary') {
+      // Star
+      icon.lineStyle(0);
+      icon.beginFill(color, 0.8);
+      const sp = 5;
+      const lp = 9;
+      for (let pi = 0; pi < 5; pi++) {
+        const a1 = (pi / 5) * Math.PI * 2 - Math.PI / 2;
+        const a2 = ((pi + 0.5) / 5) * Math.PI * 2 - Math.PI / 2;
+        if (pi === 0) icon.moveTo(cx + Math.cos(a1) * lp, cy + Math.sin(a1) * lp);
+        else icon.lineTo(cx + Math.cos(a1) * lp, cy + Math.sin(a1) * lp);
+        icon.lineTo(cx + Math.cos(a2) * sp, cy + Math.sin(a2) * sp);
+      }
+      icon.closePath();
+      icon.endFill();
+    } else if (rarity === 'curse') {
+      // Skull (already handled in main card)
+    } else {
+      // Shield
+      icon.lineStyle(1.5, color, 0.75);
+      icon.moveTo(cx, cy - 10);
+      icon.lineTo(cx + 8, cy - 5);
+      icon.lineTo(cx + 8, cy + 4);
+      icon.lineTo(cx, cy + 10);
+      icon.lineTo(cx - 8, cy + 4);
+      icon.lineTo(cx - 8, cy - 5);
+      icon.closePath();
+    }
+
+    g.addChild(icon);
   }
 
   private createCardBack(): Graphics {
@@ -1051,33 +1194,25 @@ export class GameRenderer {
     g.lineStyle(1, 0x003344, 0.7);
     for (let row = 0; row < 5; row++) {
       const y = 30 + row * 30;
-      g.moveTo(12, y);
-      g.lineTo(40 + (row % 2) * 20, y);
-      g.moveTo(55 + (row % 2) * 20, y);
-      g.lineTo(CARD_W - 12, y);
+      g.moveTo(12, y); g.lineTo(40 + (row % 2) * 20, y);
+      g.moveTo(55 + (row % 2) * 20, y); g.lineTo(CARD_W - 12, y);
     }
     for (let col = 0; col < 3; col++) {
       const x = 30 + col * 35;
-      g.moveTo(x, 15);
-      g.lineTo(x, 55 + col * 15);
-      g.moveTo(x, 70 + col * 15);
-      g.lineTo(x, CARD_H - 20);
+      g.moveTo(x, 15); g.lineTo(x, 55 + col * 15);
+      g.moveTo(x, 70 + col * 15); g.lineTo(x, CARD_H - 20);
     }
 
     g.lineStyle(0);
     g.beginFill(0x00aacc, 0.7);
     const dots = [[40, 30], [75, 60], [55, 90], [90, 45], [30, 120], [100, 130]];
-    for (const [dx, dy] of dots) {
-      g.drawCircle(dx, dy, 3);
-    }
+    for (const [dx, dy] of dots) { g.drawCircle(dx, dy, 3); }
     g.endFill();
 
     g.lineStyle(2, 0x00aacc, 0.45);
     g.drawCircle(CARD_W * 0.5, CARD_H * 0.5, 22);
-    g.moveTo(CARD_W * 0.5 - 12, CARD_H * 0.5);
-    g.lineTo(CARD_W * 0.5 + 12, CARD_H * 0.5);
-    g.moveTo(CARD_W * 0.5, CARD_H * 0.5 - 12);
-    g.lineTo(CARD_W * 0.5, CARD_H * 0.5 + 12);
+    g.moveTo(CARD_W * 0.5 - 12, CARD_H * 0.5); g.lineTo(CARD_W * 0.5 + 12, CARD_H * 0.5);
+    g.moveTo(CARD_W * 0.5, CARD_H * 0.5 - 12); g.lineTo(CARD_W * 0.5, CARD_H * 0.5 + 12);
 
     return g;
   }
@@ -1086,10 +1221,10 @@ export class GameRenderer {
 
   private handleStateTransitions(prev: GameState, next: GameState, w: number, h: number): void {
     const isBoss = BOSS_TYPES.includes(next.enemy.type);
-    const ex = w * 0.68;
-    const ey = isBoss ? h * 0.32 : h * 0.27;
-    const px = w * 0.3;
-    const py = h * 0.27;
+    const ex = w * 0.5;
+    const ey = isBoss ? h * 0.24 : h * 0.22;
+    const px = 70;
+    const py = h * 0.50 + 45;
 
     // Boss phase transition
     if (next.bossPhase > prev.bossPhase) {
@@ -1099,35 +1234,35 @@ export class GameRenderer {
     // Enemy took damage
     if (next.enemy.hp < prev.enemy.hp) {
       const amount = prev.enemy.hp - next.enemy.hp;
-      this.spawnFloatNumber(ex, ey - 85, amount, 0xff2244, '-');
-      this.flashTarget(ex, ey, 0xff0000, 110, 75);
+      this.spawnFloatNumber(ex, ey - 80, amount, 0xff2244, '-');
+      this.flashTarget(ex, ey, 0xff0000, 100, 80);
       if (amount > 10) this.screenShake(9, 0.3);
     }
 
     // Enemy shield reduced
     if (next.enemy.shield < prev.enemy.shield && next.enemy.hp === prev.enemy.hp) {
       const blocked = prev.enemy.shield - next.enemy.shield;
-      this.spawnFloatNumber(ex + 35, ey - 65, blocked, 0x4488ff, '-');
+      this.spawnFloatNumber(ex + 35, ey - 60, blocked, 0x4488ff, '-');
     }
 
     // Player took damage
     if (next.player.hp < prev.player.hp) {
       const amount = prev.player.hp - next.player.hp;
-      this.spawnFloatNumber(px, py - 85, amount, 0xff4466, '-');
-      this.flashTarget(px, py, 0x880022, 110, 75);
+      this.spawnFloatNumber(px, py - 60, amount, 0xff4466, '-');
+      this.flashTarget(px, py, 0x880022, 90, 60);
       if (amount > 10) this.screenShake(7, 0.25);
     }
 
     // Player healed
     if (next.player.hp > prev.player.hp) {
       const healed = next.player.hp - prev.player.hp;
-      this.spawnFloatNumber(px, py - 85, healed, 0x00ff88, '+');
+      this.spawnFloatNumber(px, py - 60, healed, 0x00ff88, '+');
     }
 
     // Player gained shield
     if (next.player.shield > prev.player.shield) {
       const gained = next.player.shield - prev.player.shield;
-      this.spawnFloatNumber(px - 40, py - 65, gained, 0x66ddff, '+');
+      this.spawnFloatNumber(px + 30, py - 45, gained, 0x66ddff, '+');
     }
 
     // Victory
@@ -1137,28 +1272,21 @@ export class GameRenderer {
   }
 
   private spawnBossPhaseTransition(phase: number, w: number, h: number): void {
-    const phaseColors: Record<number, number> = { 1: 0xff0044, 2: 0xff4400, 3: 0xff0000 };
+    const phaseColors: Record<number, number> = { 1: 0xff0044, 2: 0xaa44ff, 3: 0xffffff };
     const color = phaseColors[phase] ?? 0xff0000;
 
-    // Full-screen flash
     const flash = new Graphics();
     flash.beginFill(color, 0.4);
     flash.drawRect(0, 0, w, h);
     flash.endFill();
     this.effectsLayer.addChild(flash);
 
-    this.addAnimation(0.5, (p) => {
-      flash.alpha = 0.4 * (1 - p);
-    }, () => {
+    this.addAnimation(0.5, (p) => { flash.alpha = 0.4 * (1 - p); }, () => {
       this.effectsLayer.removeChild(flash);
     });
 
-    // Dramatic phase text
     const phaseText = new Text(`— PHASE ${phase} —`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 52,
-      fill: color,
-      fontWeight: 'bold'
+      fontFamily: 'Courier New', fontSize: 52, fill: color, fontWeight: 'bold',
     }));
     phaseText.anchor.set(0.5, 0.5);
     phaseText.x = w * 0.5;
@@ -1169,9 +1297,7 @@ export class GameRenderer {
     this.addAnimation(1.6, (p) => {
       phaseText.scale.set(0.7 + p * 0.5);
       phaseText.alpha = p < 0.3 ? p / 0.3 : p > 0.7 ? 1 - (p - 0.7) / 0.3 : 1;
-    }, () => {
-      this.effectsLayer.removeChild(phaseText);
-    });
+    }, () => { this.effectsLayer.removeChild(phaseText); });
 
     this.screenShake(16, 0.5);
   }
@@ -1179,10 +1305,7 @@ export class GameRenderer {
   private spawnFloatNumber(x: number, y: number, amount: number, color: number, prefix = ''): void {
     const fontSize = amount > 15 ? 28 : amount > 8 ? 22 : 18;
     const text = new Text(`${prefix}${amount}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize,
-      fill: color,
-      fontWeight: 'bold'
+      fontFamily: 'Courier New', fontSize, fill: color, fontWeight: 'bold',
     }));
     text.anchor.set(0.5, 0.5);
     text.x = x + (Math.random() - 0.5) * 24;
@@ -1195,9 +1318,7 @@ export class GameRenderer {
       text.y = startY - p * 50;
       text.alpha = p < 0.5 ? 1 : 1 - (p - 0.5) * 2;
       text.scale.set(1 + p * 0.3);
-    }, () => {
-      this.effectsLayer.removeChild(text);
-    });
+    }, () => { this.effectsLayer.removeChild(text); });
   }
 
   private flashTarget(cx: number, cy: number, color: number, hw: number, hh: number): void {
@@ -1207,9 +1328,7 @@ export class GameRenderer {
     flash.endFill();
     this.effectsLayer.addChild(flash);
 
-    this.addAnimation(0.22, (p) => {
-      flash.alpha = 0.6 * (1 - p);
-    }, () => {
+    this.addAnimation(0.22, (p) => { flash.alpha = 0.6 * (1 - p); }, () => {
       this.effectsLayer.removeChild(flash);
     });
   }
@@ -1236,9 +1355,7 @@ export class GameRenderer {
     this.addAnimation(0.3, (p) => {
       flash.alpha = 1 - p;
       flash.scale.set(1 + p * 0.6);
-    }, () => {
-      this.effectsLayer.removeChild(flash);
-    });
+    }, () => { this.effectsLayer.removeChild(flash); });
   }
 
   private spawnVictoryParticles(x: number, y: number): void {
@@ -1268,9 +1385,7 @@ export class GameRenderer {
         particle.y = sy + vy * p + 40 * p * p;
         particle.alpha = p < 0.6 ? 1 : 1 - (p - 0.6) / 0.4;
         particle.scale.set(1 - p * 0.4);
-      }, () => {
-        this.effectsLayer.removeChild(particle);
-      });
+      }, () => { this.effectsLayer.removeChild(particle); });
     }
   }
 
@@ -1278,14 +1393,15 @@ export class GameRenderer {
     const w = this.app.screen.width;
     const h = this.app.screen.height;
     const isBoss = this.lastState ? BOSS_TYPES.includes(this.lastState.enemy.type) : false;
-    const ex = w * 0.68;
-    const ey = isBoss ? h * 0.32 : h * 0.27;
+    const ex = w * 0.5;
+    const ey = isBoss ? h * 0.24 : h * 0.22;
 
     if (this.lastState?.enemy.intent === 'charge') {
       if (!this.chargeRing) {
         this.chargeRing = new Graphics();
         this.chargeRing.lineStyle(4, 0xff4400, 0.75);
-        this.chargeRing.drawCircle(ex, ey, 80);
+        const ringR = isBoss ? 110 : 72;
+        this.chargeRing.drawCircle(ex, ey, ringR);
         this.chargeRing.filters = [new GlowFilter({ color: 0xff4400, distance: 28, outerStrength: 2, quality: 0.4 })];
         this.effectsLayer.addChild(this.chargeRing);
       }
@@ -1339,18 +1455,23 @@ export class GameRenderer {
       this.background.lineTo(w, y);
     }
 
-    // CRT scanline overlay
+    // CRT scanlines
     this.background.lineStyle(1, 0x000000, 0.07);
     for (let y = 0; y <= h; y += 4) {
       this.background.moveTo(0, y);
       this.background.lineTo(w, y);
     }
 
-    // Neon border around game canvas
+    // Neon border
     this.background.lineStyle(3, 0x00ffcc, 0.12);
     this.background.drawRect(1, 1, w - 2, h - 2);
     this.background.lineStyle(1, 0x00ffcc, 0.05);
     this.background.drawRect(4, 4, w - 8, h - 8);
+
+    // Divider between enemy and player zones
+    this.background.lineStyle(1, 0x00ffcc, 0.08);
+    this.background.moveTo(10, h * 0.49);
+    this.background.lineTo(w - 10, h * 0.49);
   }
 
   // ---- Card Tooltip ---------------------------------------------------------
@@ -1359,13 +1480,11 @@ export class GameRenderer {
     this.tooltipLayer.removeChildren();
 
     const rarityColors: Record<string, number> = {
-      common: 0x00ffcc,
-      rare: 0xaa44ff,
-      legendary: 0xffaa00,
+      common: 0x00ffcc, rare: 0xaa44ff, legendary: 0xffaa00, curse: 0x880000,
     };
     const color = rarityColors[card.rarity] ?? 0x00ffcc;
-    const tipW = 200;
-    const tipH = 80;
+    const tipW = 220;
+    const tipH = 90;
     const tx = Math.max(8, Math.min(this.app.screen.width - tipW - 8, centerX - tipW * 0.5));
     const ty = Math.max(8, bottomY - tipH);
 
@@ -1374,38 +1493,33 @@ export class GameRenderer {
     bg.lineStyle(2, color, 0.85);
     bg.drawRoundedRect(0, 0, tipW, tipH, 8);
     bg.endFill();
-    bg.x = tx;
-    bg.y = ty;
+    bg.x = tx; bg.y = ty;
     bg.filters = [new GlowFilter({ color, distance: 10, outerStrength: 1.5, quality: 0.4 })];
     this.tooltipLayer.addChild(bg);
 
     const nameT = new Text(card.name, new TextStyle({
-      fontFamily: 'Courier New', fontSize: 12, fill: color, fontWeight: 'bold',
+      fontFamily: 'Courier New', fontSize: 13, fill: color, fontWeight: 'bold',
     }));
-    nameT.x = tx + 8;
-    nameT.y = ty + 6;
+    nameT.x = tx + 8; nameT.y = ty + 6;
     this.tooltipLayer.addChild(nameT);
 
     const rarityT = new Text(`${card.rarity.toUpperCase()} · ${card.type.toUpperCase()} · ${card.cost} MANA`, new TextStyle({
       fontFamily: 'Courier New', fontSize: 9, fill: color,
     }));
     rarityT.alpha = 0.6;
-    rarityT.x = tx + 8;
-    rarityT.y = ty + 22;
+    rarityT.x = tx + 8; rarityT.y = ty + 22;
     this.tooltipLayer.addChild(rarityT);
 
     const sep = new Graphics();
     sep.lineStyle(1, color, 0.25);
-    sep.moveTo(tx + 8, ty + 33);
-    sep.lineTo(tx + tipW - 8, ty + 33);
+    sep.moveTo(tx + 8, ty + 34); sep.lineTo(tx + tipW - 8, ty + 34);
     this.tooltipLayer.addChild(sep);
 
     const descT = new Text(card.description, new TextStyle({
-      fontFamily: 'Courier New', fontSize: 10, fill: 0xaaddee,
+      fontFamily: 'Courier New', fontSize: 11, fill: 0xaaddee,
       wordWrap: true, wordWrapWidth: tipW - 16,
     }));
-    descT.x = tx + 8;
-    descT.y = ty + 38;
+    descT.x = tx + 8; descT.y = ty + 40;
     this.tooltipLayer.addChild(descT);
   }
 
@@ -1420,14 +1534,11 @@ export class GameRenderer {
     if (combo < 3) return;
 
     const comboText = new Text(`COMBO ×${combo}`, new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 28,
-      fill: 0xffaa00,
-      fontWeight: 'bold',
+      fontFamily: 'Courier New', fontSize: 28, fill: 0xffaa00, fontWeight: 'bold',
     }));
     comboText.anchor.set(0.5, 0.5);
     comboText.x = w * 0.5;
-    comboText.y = h * 0.62;
+    comboText.y = h * 0.50 - 18;
     comboText.alpha = 0.85;
     comboText.filters = [new GlowFilter({ color: 0xffaa00, distance: 18, outerStrength: 2.5, quality: 0.4 })];
     this.uiLayer.addChild(comboText);
@@ -1455,165 +1566,27 @@ export class GameRenderer {
     g.lineStyle(2, color, alpha);
     g.drawCircle(0, -20, 12);
 
-    // Visor (horizontal line across head)
+    // Visor
     g.lineStyle(3, color, alpha);
-    g.moveTo(-8, -20);
-    g.lineTo(8, -20);
+    g.moveTo(-8, -20); g.lineTo(8, -20);
 
-    // Arm left
+    // Arms
     g.lineStyle(2, color, alpha * 0.7);
-    g.moveTo(-12, -4);
-    g.lineTo(-22, 6);
-    g.moveTo(-22, 6);
-    g.lineTo(-18, 14);
-
-    // Arm right
-    g.moveTo(12, -4);
-    g.lineTo(22, 6);
-    g.moveTo(22, 6);
-    g.lineTo(18, 14);
+    g.moveTo(-12, -4); g.lineTo(-22, 6); g.moveTo(-22, 6); g.lineTo(-18, 14);
+    g.moveTo(12, -4); g.lineTo(22, 6); g.moveTo(22, 6); g.lineTo(18, 14);
 
     // Class-specific glyph
     g.lineStyle(1.5, color, alpha * 0.6);
     if (playerClass === 'HACKER') {
-      // Circuit lines on body
-      g.moveTo(-8, -2);
-      g.lineTo(-2, -2);
-      g.moveTo(-2, -2);
-      g.lineTo(-2, 4);
-      g.moveTo(2, 0);
-      g.lineTo(8, 0);
+      g.moveTo(-8, -2); g.lineTo(-2, -2); g.moveTo(-2, -2); g.lineTo(-2, 4); g.moveTo(2, 0); g.lineTo(8, 0);
     } else if (playerClass === 'WARRIOR') {
-      // Shield icon on body
-      g.moveTo(-6, -2);
-      g.lineTo(0, -6);
-      g.lineTo(6, -2);
-      g.lineTo(6, 6);
-      g.lineTo(0, 10);
-      g.lineTo(-6, 6);
-      g.lineTo(-6, -2);
+      g.moveTo(-6, -2); g.lineTo(0, -6); g.lineTo(6, -2); g.lineTo(6, 6); g.lineTo(0, 10); g.lineTo(-6, 6); g.lineTo(-6, -2);
     } else {
       // Ghost: dots
       g.lineStyle(0);
       g.beginFill(color, alpha * 0.5);
       g.drawCircle(-4, 2, 2);
       g.drawCircle(4, 2, 2);
-      g.endFill();
-    }
-
-    g.lineStyle(0);
-  }
-
-  /** Draw a unique geometric enemy sprite centered at (0,0). */
-  private drawEnemySprite(g: Graphics, enemyType: string, color: number): void {
-    const alpha = 0.8;
-    g.lineStyle(0);
-
-    if (enemyType === 'VIRUS_EXE' || enemyType === 'SPAM_BOT') {
-      // Pulsing hexagon with corruption lines
-      const r = 18;
-      g.lineStyle(2, color, alpha);
-      g.beginFill(color, 0.15);
-      const pts: [number, number][] = [];
-      for (let i = 0; i < 6; i++) {
-        const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
-        pts.push([Math.cos(a) * r, Math.sin(a) * r]);
-      }
-      g.moveTo(pts[0][0], pts[0][1]);
-      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
-      g.closePath();
-      g.endFill();
-      // Corruption lines
-      g.lineStyle(1, color, alpha * 0.5);
-      g.moveTo(-14, -6); g.lineTo(14, -6);
-      g.moveTo(-10, 2);  g.lineTo(10, 2);
-      g.moveTo(-7, 10);  g.lineTo(7, 10);
-    } else if (enemyType === 'FIREWALL_SYS' || enemyType === 'ELITE_FIREWALL') {
-      // Blue square fortress with brick pattern
-      g.lineStyle(3, color, alpha);
-      g.beginFill(color, 0.15);
-      g.drawRect(-20, -20, 40, 40);
-      g.endFill();
-      g.lineStyle(1, color, alpha * 0.4);
-      // Brick rows
-      for (let row = -14; row < 20; row += 8) {
-        g.moveTo(-20, row); g.lineTo(20, row);
-      }
-      g.moveTo(0, -20); g.lineTo(0, -12);
-      g.moveTo(-10, -12); g.lineTo(-10, -4);
-      g.moveTo(10, -4); g.lineTo(10, 4);
-      // Battlements
-      g.lineStyle(3, color, alpha);
-      for (let bx = -18; bx <= 10; bx += 14) {
-        g.moveTo(bx, -20); g.lineTo(bx, -26);
-        g.lineTo(bx + 8, -26); g.lineTo(bx + 8, -20);
-      }
-    } else if (enemyType === 'CORRUPTED_AI' || enemyType === 'ELITE_AI') {
-      // Glitching circle with data artifacts
-      g.lineStyle(2, color, alpha);
-      g.beginFill(color, 0.12);
-      g.drawCircle(0, 0, 20);
-      g.endFill();
-      // Glitch bars
-      g.lineStyle(0);
-      g.beginFill(color, 0.4);
-      g.drawRect(-20, -4, 8, 3);
-      g.drawRect(12, 6, 8, 3);
-      g.drawRect(-14, 10, 6, 3);
-      g.endFill();
-      // Inner cross
-      g.lineStyle(2, color, alpha * 0.6);
-      g.moveTo(-12, 0); g.lineTo(12, 0);
-      g.moveTo(0, -12); g.lineTo(0, 12);
-    } else if (enemyType === 'SYSTEM_OVERLORD') {
-      // Massive: triangle inside circle inside square, partial rotation suggestion
-      const sq = 26;
-      g.lineStyle(3, color, alpha);
-      g.beginFill(color, 0.1);
-      g.drawRect(-sq, -sq, sq * 2, sq * 2);
-      g.endFill();
-      g.lineStyle(2, color, alpha * 0.8);
-      g.beginFill(color, 0.08);
-      g.drawCircle(0, 0, 18);
-      g.endFill();
-      // Triangle inside
-      g.lineStyle(2, color, alpha);
-      g.moveTo(0, -13);
-      g.lineTo(12, 10);
-      g.lineTo(-12, 10);
-      g.lineTo(0, -13);
-      // Corner decorations
-      g.lineStyle(1.5, color, alpha * 0.5);
-      const corners: [number, number][] = [[-sq, -sq], [sq, -sq], [sq, sq], [-sq, sq]];
-      for (const [cx, cy] of corners) {
-        g.moveTo(cx, cy + Math.sign(cy) * -8); g.lineTo(cx, cy); g.lineTo(cx + Math.sign(cx) * -8, cy);
-      }
-    } else if (enemyType === 'ELITE_WORM') {
-      // Segmented worm body
-      g.lineStyle(2, color, alpha);
-      for (let seg = 0; seg < 3; seg++) {
-        const sx = (seg - 1) * 14;
-        g.beginFill(color, 0.2);
-        g.drawCircle(sx, 0, 9 - seg * 1.5);
-        g.endFill();
-        g.lineStyle(2, color, alpha);
-        g.drawCircle(sx, 0, 9 - seg * 1.5);
-      }
-      // Eyes
-      g.lineStyle(0);
-      g.beginFill(0xff0000, 0.9);
-      g.drawCircle(-14, -4, 3);
-      g.drawCircle(-14, 4, 3);
-      g.endFill();
-    } else {
-      // Generic: diamond shape
-      g.lineStyle(2, color, alpha);
-      g.beginFill(color, 0.2);
-      g.moveTo(0, -22);
-      g.lineTo(16, 0);
-      g.lineTo(0, 22);
-      g.lineTo(-16, 0);
-      g.lineTo(0, -22);
       g.endFill();
     }
 

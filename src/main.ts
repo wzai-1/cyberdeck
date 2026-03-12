@@ -12,6 +12,7 @@ import { ShopRenderer } from './ui/ShopRenderer';
 import { ClassSelectRenderer } from './ui/ClassSelectRenderer';
 import { MainMenuRenderer } from './ui/MainMenuRenderer';
 import { SettingsRenderer, loadSettings, saveSettings } from './ui/SettingsRenderer';
+import { TutorialOverlay } from './ui/TutorialOverlay';
 import { AudioManager } from './audio/AudioManager';
 import {
   loadAchievements,
@@ -114,86 +115,9 @@ window.addEventListener('error', (e) => {
 
 // ---- Tutorial system -------------------------------------------------------
 
-const TUTORIAL_KEY = 'cyberdeck_tutorial';
-
-function isTutorialDone(): boolean {
-  try { return localStorage.getItem(TUTORIAL_KEY) === 'done'; } catch { return false; }
-}
-
-function markTutorialDone(): void {
-  try { localStorage.setItem(TUTORIAL_KEY, 'done'); } catch { /* */ }
-}
-
-const TUTORIAL_STEPS = [
-  'STEP 1/4 \u2014 CLICK A CARD TO PLAY IT',
-  'STEP 2/4 \u2014 CARDS COST MANA (\u25C6 diamonds)',
-  'STEP 3/4 \u2014 CLICK END TURN WHEN DONE',
-  'STEP 4/4 \u2014 BLOCK REDUCES INCOMING DAMAGE',
-];
-
-let tutorialStep = 0;
-let tutorialEl: HTMLDivElement | null = null;
-
-function showTutorialStep(step: number): void {
-  if (isTutorialDone() || step >= TUTORIAL_STEPS.length) {
-    hideTutorial();
-    markTutorialDone();
-    return;
-  }
-  if (tutorialEl && tutorialEl.parentNode) tutorialEl.parentNode.removeChild(tutorialEl);
-
-  const el = document.createElement('div');
-  tutorialEl = el;
-  el.style.cssText = `
-    position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
-    background: rgba(4,12,22,0.97);
-    border: 2px solid #00ffcc;
-    border-radius: 10px;
-    padding: 12px 20px;
-    color: #00ffcc;
-    font-family: 'Courier New', monospace;
-    font-size: 14px;
-    z-index: 7000;
-    box-shadow: 0 0 24px rgba(0,255,204,0.3);
-    letter-spacing: 2px;
-    display: flex; align-items: center; gap: 16px;
-  `;
-  const msg = document.createElement('span');
-  msg.textContent = TUTORIAL_STEPS[step] ?? '';
-  const skip = document.createElement('button');
-  skip.textContent = '[SKIP]';
-  skip.style.cssText = `
-    background: none; border: 1px solid #336655; color: #336655;
-    font-family: 'Courier New', monospace; font-size: 12px;
-    cursor: pointer; padding: 4px 10px; border-radius: 4px;
-  `;
-  skip.addEventListener('click', () => { hideTutorial(); markTutorialDone(); tutorialStep = 99; });
-  el.appendChild(msg);
-  el.appendChild(skip);
-  document.body.appendChild(el);
-}
-
-function hideTutorial(): void {
-  if (tutorialEl && tutorialEl.parentNode) tutorialEl.parentNode.removeChild(tutorialEl);
-  tutorialEl = null;
-}
-
-function advanceTutorial(): void {
-  if (isTutorialDone()) return;
-  tutorialStep += 1;
-  if (tutorialStep < TUTORIAL_STEPS.length) {
-    showTutorialStep(tutorialStep);
-  } else {
-    hideTutorial();
-    markTutorialDone();
-  }
-}
-
-function startTutorial(): void {
-  if (isTutorialDone()) return;
-  tutorialStep = 0;
-  showTutorialStep(0);
-}
+const tutorial = new TutorialOverlay({
+  onComplete: () => { /* tutorial done */ },
+});
 
 // ---- Systems ---------------------------------------------------------------
 
@@ -422,12 +346,14 @@ window.addEventListener('keydown', (e) => {
         state = playCard(state, card.id);
         checkCombatWin();
         gameRenderer.render(state);
+        tutorial.onCardPlayed();
       }
     }
     return;
   }
 
   if (e.key === 'e' || e.key === 'E') {
+    tutorial.onEndTurn();
     const hpBefore = state.player.hp;
     state = endPlayerTurn(state);
     const dmg = Math.max(0, hpBefore - state.player.hp);
@@ -435,6 +361,7 @@ window.addEventListener('keydown', (e) => {
     if (dmg > 0) audio.playerHurt();
     checkCombatLose();
     gameRenderer.render(state);
+    tutorial.onEnemyAttacked();
   }
 });
 
@@ -717,7 +644,7 @@ const mapRenderer = new MapRenderer(app, {
       gameRenderer.animateDrawCards(state.hand.length);
       gameRenderer.render(state);
       showScreen('game');
-      startTutorial();
+      tutorial.start();
     } else if (node.type === 'shop') {
       const shopInventory = generateCardReward();
       const shopRelic = getRandomRelic(state.relics);
@@ -813,10 +740,11 @@ const gameRenderer = new GameRenderer(app, {
       state = playCard(state, cardId);
       checkCombatWin();
       gameRenderer.render(state);
-      advanceTutorial(); // move to step 2 after first card play
+      tutorial.onCardPlayed();
     });
   },
   onEndTurn: () => {
+    tutorial.onEndTurn();
     const hpBefore = state.player.hp;
     state = endPlayerTurn(state);
     const dmg = Math.max(0, hpBefore - state.player.hp);
@@ -824,7 +752,7 @@ const gameRenderer = new GameRenderer(app, {
     if (dmg > 0) audio.playerHurt();
     checkCombatLose();
     gameRenderer.render(state);
-    advanceTutorial(); // move to step 4 after first end turn
+    tutorial.onEnemyAttacked();
   },
   onSelectCardReward: (cardId) => {
     state = selectCardReward(state, cardId);
@@ -910,8 +838,8 @@ function showAboutDialog(): void {
       <div style="color:#556677;font-size:12px;line-height:1.7">
         A cyberpunk roguelike deckbuilder.<br>
         Build your deck, hack the system, defeat the boss.<br><br>
-        <span style="color:#00ffcc">Sprint 5</span> — Commercial Ready<br>
-        <span style="color:#336677">v0.5.0</span>
+        <span style="color:#00ffcc">Sprint 8</span> — UX Overhaul<br>
+        <span style="color:#336677">v0.8.0</span>
       </div>
       <div style="color:#334455;font-size:11px;margin-top:16px">[CLICK TO CLOSE]</div>
     </div>
