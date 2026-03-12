@@ -1,4 +1,5 @@
 import { Application } from 'pixi.js';
+import './ui/css/cyberdeck.css';
 import { createInitialState } from './game/state';
 import { playCard, endPlayerTurn, startPlayerTurn, selectCardReward } from './game/combat';
 import { generateCardReward, createCardByName } from './game/cards';
@@ -43,9 +44,11 @@ const app = new Application({
   backgroundAlpha: 0,
 });
 
+const canvas = app.view as HTMLCanvasElement;
+canvas.id = 'game-canvas';
 const root = document.getElementById('app');
 if (root) {
-  root.appendChild(app.view as HTMLCanvasElement);
+  root.appendChild(canvas);
 }
 
 // ---- Visibility API: pause game loop when tab is hidden -------------------

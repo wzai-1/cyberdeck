@@ -1,446 +1,221 @@
-import { Application, Container, Graphics, Text, TextStyle } from 'pixi.js';
-import { GlowFilter } from '@pixi/filter-glow';
+import type { Application } from 'pixi.js';
 import { t, currentLang, setLanguage, type Lang } from '../i18n/index';
 
 export interface GameSettings {
-  masterVolume: number;  // 0-100
-  sfxVolume: number;     // 0-100
-  musicVolume: number;   // 0-100
-  screenShake: boolean;
+  masterVolume:    number;  // 0-100
+  sfxVolume:       number;  // 0-100
+  musicVolume:     number;  // 0-100
+  screenShake:     boolean;
   particleEffects: boolean;
 }
 
 const STORAGE_KEY = 'cyberdeck_settings';
 const DEFAULTS: GameSettings = {
-  masterVolume: 70,
-  sfxVolume: 80,
-  musicVolume: 50,
-  screenShake: true,
-  particleEffects: true,
+  masterVolume: 70, sfxVolume: 80, musicVolume: 50,
+  screenShake: true, particleEffects: true,
 };
 
-function safeGet(key: string): string | null {
-  try { return localStorage.getItem(key); } catch { return null; }
-}
-
-function safeSet(key: string, val: string): void {
-  try { localStorage.setItem(key, val); } catch { /* ignore */ }
-}
+function safeGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
+function safeSet(k: string, v: string): void { try { localStorage.setItem(k, v); } catch { /* */ } }
 
 export function loadSettings(): GameSettings {
   const raw = safeGet(STORAGE_KEY);
   if (!raw) return { ...DEFAULTS };
-  try {
-    const parsed = JSON.parse(raw) as Partial<GameSettings>;
-    return { ...DEFAULTS, ...parsed };
-  } catch {
-    return { ...DEFAULTS };
-  }
+  try { return { ...DEFAULTS, ...(JSON.parse(raw) as Partial<GameSettings>) }; } catch { return { ...DEFAULTS }; }
 }
 
-export function saveSettings(settings: GameSettings): void {
-  safeSet(STORAGE_KEY, JSON.stringify(settings));
+export function saveSettings(s: GameSettings): void {
+  safeSet(STORAGE_KEY, JSON.stringify(s));
 }
 
-// ---- Renderer ----------------------------------------------------------------
+// ---- Renderer --------------------------------------------------------------
 
 interface SettingsHandlers {
   onClose: (settings: GameSettings) => void;
 }
 
-const PANEL_W_MAX = 560;
-const PANEL_H_MAX = 580;
-
 export class SettingsRenderer {
-  private app: Application;
+  private div: HTMLElement;
   private handlers: SettingsHandlers;
-  private rootContainer: Container;
-  private overlay: Graphics;
-  private uiLayer: Container;
   private settings: GameSettings;
   private langChangeCb: (() => void) | null = null;
 
-  constructor(app: Application, handlers: SettingsHandlers) {
-    this.app = app;
+  constructor(_app: Application, handlers: SettingsHandlers) {
     this.handlers = handlers;
     this.settings = loadSettings();
 
-    this.rootContainer = new Container();
-    this.overlay = new Graphics();
-    this.uiLayer = new Container();
+    this.div = document.createElement('div');
+    this.div.id = 'screen-settings';
+    // Note: this is a modal overlay, not a normal cd-screen
+    document.body.appendChild(this.div);
 
-    this.rootContainer.addChild(this.overlay);
-    this.rootContainer.addChild(this.uiLayer);
-    this.app.stage.addChild(this.rootContainer);
-    this.rootContainer.visible = false;
-
-    this.langChangeCb = () => {
-      if (this.rootContainer.visible) this.render();
-    };
-    try {
-      window.addEventListener('langchange', this.langChangeCb);
-    } catch { /* node env */ }
+    this.langChangeCb = () => { if (this.div.classList.contains('active')) this.render(); };
+    try { window.addEventListener('langchange', this.langChangeCb); } catch { /* */ }
   }
 
-  show(): void {
-    this.settings = loadSettings();
-    this.rootContainer.visible = true;
-    this.render();
-  }
-
-  hide(): void {
-    this.rootContainer.visible = false;
-  }
+  show(): void  { this.settings = loadSettings(); this.div.classList.add('active'); this.render(); }
+  hide(): void  { this.div.classList.remove('active'); }
 
   destroy(): void {
-    if (this.langChangeCb) {
-      try { window.removeEventListener('langchange', this.langChangeCb); } catch { /* ignore */ }
-    }
+    if (this.langChangeCb) { try { window.removeEventListener('langchange', this.langChangeCb); } catch { /* */ } }
+    if (this.div.parentNode) this.div.parentNode.removeChild(this.div);
   }
 
   render(): void {
-    this.uiLayer.removeChildren();
-    this.overlay.clear();
+    this.div.innerHTML = '';
 
-    const w = this.app.screen.width;
-    const h = this.app.screen.height;
-
-    // Dark overlay
-    this.overlay.beginFill(0x000000, 0.72);
-    this.overlay.drawRect(0, 0, w, h);
-    this.overlay.endFill();
-
-    const pw = Math.min(PANEL_W_MAX, w * 0.9);
-    const ph = Math.min(PANEL_H_MAX, h * 0.9);
-    const px = (w - pw) * 0.5;
-    const py = (h - ph) * 0.5;
-
-    // Panel
-    const panel = new Graphics();
-    panel.beginFill(0x05111a, 0.98);
-    panel.lineStyle(3, 0xffaa00, 0.9);
-    panel.drawRoundedRect(px, py, pw, ph, 14);
-    panel.endFill();
-    panel.filters = [new GlowFilter({ color: 0xffaa00, distance: 20, outerStrength: 1.5, quality: 0.4 })];
-    this.uiLayer.addChild(panel);
+    const panel = document.createElement('div');
+    panel.className = 'settings-panel';
 
     // Title
-    const title = new Text(t('settings.title'), new TextStyle({
-      fontFamily: 'Courier New',
-      fontSize: 20,
-      fill: 0xffaa00,
-      fontWeight: 'bold',
-    }));
-    title.anchor.set(0.5, 0.5);
-    title.x = w * 0.5;
-    title.y = py + 32;
-    this.uiLayer.addChild(title);
+    const titleEl = document.createElement('div');
+    titleEl.className = 'settings-title';
+    titleEl.textContent = t('settings.title');
+    panel.appendChild(titleEl);
 
-    // Language toggle (top-right of panel)
-    this.drawLangToggle(px + pw - 10, py + 14);
+    // Language toggle (top-right)
+    const langRow = document.createElement('div');
+    langRow.className = 'settings-lang-row lang-toggle';
+    (['en', 'zh'] as Lang[]).forEach(code => {
+      const btn = document.createElement('button');
+      btn.className = 'lang-pill' + (currentLang() === code ? ' active' : '');
+      btn.textContent = code === 'en' ? 'EN' : '中文';
+      btn.addEventListener('click', () => setLanguage(code));
+      langRow.appendChild(btn);
+    });
+    panel.appendChild(langRow);
 
-    let rowY = py + 68;
-    const rowH = 52;
+    // Sliders
+    const sliders: Array<{ label: string; key: 'masterVolume' | 'sfxVolume' | 'musicVolume' }> = [
+      { label: t('settings.masterVolume'), key: 'masterVolume' },
+      { label: t('settings.sfxVolume'),    key: 'sfxVolume'    },
+      { label: t('settings.musicVolume'),  key: 'musicVolume'  },
+    ];
+    sliders.forEach(({ label, key }) => {
+      panel.appendChild(this.makeSlider(label, key));
+    });
 
-    // ---- Volume sliders ----
-    rowY = this.drawSlider(t('settings.masterVolume'), 'masterVolume', px + 20, rowY, pw - 40, rowH);
-    rowY = this.drawSlider(t('settings.sfxVolume'),    'sfxVolume',    px + 20, rowY, pw - 40, rowH);
-    rowY = this.drawSlider(t('settings.musicVolume'),  'musicVolume',  px + 20, rowY, pw - 40, rowH);
+    // Toggles
+    const toggles: Array<{ label: string; key: 'screenShake' | 'particleEffects' }> = [
+      { label: t('settings.screenShake'),     key: 'screenShake'     },
+      { label: t('settings.particleEffects'), key: 'particleEffects' },
+    ];
+    toggles.forEach(({ label, key }) => {
+      panel.appendChild(this.makeToggle(label, key));
+    });
 
-    rowY += 8;
+    // Keybinds
+    const kbLabel = document.createElement('div');
+    kbLabel.className = 'settings-keybinds-label';
+    kbLabel.textContent = t('settings.keybinds');
+    panel.appendChild(kbLabel);
 
-    // ---- Toggles ----
-    rowY = this.drawToggle(t('settings.screenShake'),     'screenShake',     px + 20, rowY, pw - 40);
-    rowY += 8;
-    rowY = this.drawToggle(t('settings.particleEffects'), 'particleEffects', px + 20, rowY, pw - 40);
+    const kbRow = document.createElement('div');
+    kbRow.className = 'keybind-row';
+    const binds: [string, string][] = [
+      ['1-5', t('settings.playCard')],
+      ['E',   t('settings.endTurn')],
+      ['ESC', t('settings.pauseMenu')],
+    ];
+    binds.forEach(([key, action]) => {
+      const item = document.createElement('div');
+      item.className = 'keybind-item';
+      item.innerHTML = `<span class="key-box">${key}</span><span class="keybind-action">${action}</span>`;
+      kbRow.appendChild(item);
+    });
+    panel.appendChild(kbRow);
 
-    rowY += 16;
-
-    // ---- Keybinds display ----
-    this.drawKeybinds(px + 20, rowY, pw - 40);
-
-    // ---- Close button ----
-    const btnW = 180;
-    const btnH = 46;
-    const btnX = w * 0.5 - btnW * 0.5;
-    const btnY = py + ph - 62;
-
-    const closeBtn = new Graphics();
-    closeBtn.beginFill(0x05111a, 1);
-    closeBtn.lineStyle(2.5, 0x00ffcc, 1);
-    closeBtn.drawRoundedRect(0, 0, btnW, btnH, 10);
-    closeBtn.endFill();
-    closeBtn.x = btnX;
-    closeBtn.y = btnY;
-    closeBtn.filters = [new GlowFilter({ color: 0x00ffcc, distance: 12, outerStrength: 1.5, quality: 0.4 })];
-    closeBtn.eventMode = 'static';
-    closeBtn.cursor = 'pointer';
-    closeBtn.on('pointerover', () => closeBtn.scale.set(1.04));
-    closeBtn.on('pointerout', () => closeBtn.scale.set(1.0));
-    closeBtn.on('pointerdown', () => {
+    // Close button
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'settings-close-btn';
+    closeBtn.textContent = t('settings.saveClose');
+    closeBtn.addEventListener('click', () => {
       saveSettings(this.settings);
       this.handlers.onClose(this.settings);
     });
-    this.uiLayer.addChild(closeBtn);
+    panel.appendChild(closeBtn);
 
-    const closeLabel = new Text(t('settings.saveClose'), new TextStyle({
-      fontFamily: 'Courier New', fontSize: 14, fill: 0x00ffcc, fontWeight: 'bold',
-    }));
-    closeLabel.anchor.set(0.5, 0.5);
-    closeLabel.x = btnX + btnW * 0.5;
-    closeLabel.y = btnY + btnH * 0.5;
-    this.uiLayer.addChild(closeLabel);
+    this.div.appendChild(panel);
   }
 
-  // ---- Language toggle -------------------------------------------------------
+  private makeSlider(label: string, key: 'masterVolume' | 'sfxVolume' | 'musicVolume'): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'settings-row';
 
-  private drawLangToggle(rightEdgeX: number, y: number): void {
-    const langs: Array<{ code: Lang; label: string }> = [
-      { code: 'en', label: 'EN' },
-      { code: 'zh', label: '中文' },
-    ];
-    const pillW = 44;
-    const pillH = 24;
-    const gap = 5;
-    const totalW = langs.length * pillW + (langs.length - 1) * gap;
-    let startX = rightEdgeX - totalW;
+    const lbl = document.createElement('div');
+    lbl.className = 'settings-label';
+    lbl.textContent = label;
+    row.appendChild(lbl);
 
-    langs.forEach(({ code, label }) => {
-      const isActive = currentLang() === code;
-      const color = isActive ? 0x00ffcc : 0x334455;
-
-      const pill = new Graphics();
-      pill.beginFill(isActive ? 0x051a14 : 0x050a10, 0.9);
-      pill.lineStyle(2, color, isActive ? 1 : 0.5);
-      pill.drawRoundedRect(0, 0, pillW, pillH, pillH * 0.5);
-      pill.endFill();
-      pill.x = startX;
-      pill.y = y;
-      if (isActive) {
-        pill.filters = [new GlowFilter({ color: 0x00ffcc, distance: 8, outerStrength: 1.5, quality: 0.4 })];
-      }
-      pill.eventMode = 'static';
-      pill.cursor = 'pointer';
-      pill.on('pointerdown', () => { setLanguage(code); });
-      pill.on('pointerover', () => { if (!isActive) pill.alpha = 0.75; });
-      pill.on('pointerout', () => { pill.alpha = 1.0; });
-      this.uiLayer.addChild(pill);
-
-      const txt = new Text(label, new TextStyle({
-        fontFamily: 'Courier New',
-        fontSize: 11,
-        fill: isActive ? 0x00ffcc : 0x556677,
-        fontWeight: isActive ? 'bold' : 'normal',
-      }));
-      txt.anchor.set(0.5, 0.5);
-      txt.x = startX + pillW * 0.5;
-      txt.y = y + pillH * 0.5;
-      this.uiLayer.addChild(txt);
-
-      startX += pillW + gap;
-    });
-  }
-
-  // ---- Slider ----------------------------------------------------------------
-
-  private drawSlider(
-    label: string,
-    key: 'masterVolume' | 'sfxVolume' | 'musicVolume',
-    x: number,
-    y: number,
-    w: number,
-    _h: number
-  ): number {
-    const labelText = new Text(label, new TextStyle({
-      fontFamily: 'Courier New', fontSize: 11, fill: 0x556677,
-    }));
-    labelText.x = x;
-    labelText.y = y;
-    this.uiLayer.addChild(labelText);
+    const sliderRow = document.createElement('div');
+    sliderRow.className = 'slider-row';
 
     const val = this.settings[key];
-    const trackY = y + 18;
-    const trackW = w - 70;
-    const trackH = 8;
+    const trackW = 320;
 
-    const track = new Graphics();
-    track.beginFill(0x0a1822);
-    track.lineStyle(1, 0x224455, 0.8);
-    track.drawRoundedRect(0, 0, trackW, trackH, 4);
-    track.endFill();
-    track.x = x;
-    track.y = trackY;
-    this.uiLayer.addChild(track);
+    const wrap = document.createElement('div');
+    wrap.className = 'settings-slider-wrap';
+    wrap.style.width = `${trackW}px`;
 
-    const fillW = (val / 100) * trackW;
-    const fill = new Graphics();
-    fill.beginFill(0x00ffcc, 0.85);
-    fill.drawRoundedRect(0, 0, Math.max(8, fillW), trackH, 4);
-    fill.endFill();
-    fill.x = x;
-    fill.y = trackY;
-    this.uiLayer.addChild(fill);
+    const track = document.createElement('div');
+    track.className = 'settings-slider-track';
+    const fill = document.createElement('div');
+    fill.className = 'settings-slider-fill';
+    fill.style.width = `${val}%`;
+    track.appendChild(fill);
 
-    const knob = new Graphics();
-    knob.beginFill(0x00ffcc);
-    knob.drawCircle(0, 0, 9);
-    knob.endFill();
-    knob.x = x + fillW;
-    knob.y = trackY + trackH * 0.5;
-    knob.filters = [new GlowFilter({ color: 0x00ffcc, distance: 8, outerStrength: 2, quality: 0.4 })];
-    knob.eventMode = 'static';
-    knob.cursor = 'ew-resize';
-    this.uiLayer.addChild(knob);
+    const knob = document.createElement('div');
+    knob.className = 'settings-slider-knob';
+    knob.style.left = `${val}%`;
+    wrap.appendChild(track);
+    wrap.appendChild(knob);
 
-    const valText = new Text(`${val}`, new TextStyle({
-      fontFamily: 'Courier New', fontSize: 13, fill: 0x00ffcc, fontWeight: 'bold',
-    }));
-    valText.anchor.set(0, 0.5);
-    valText.x = x + trackW + 12;
-    valText.y = trackY + trackH * 0.5;
-    this.uiLayer.addChild(valText);
+    const valEl = document.createElement('span');
+    valEl.className = 'settings-slider-val';
+    valEl.textContent = String(val);
 
     let dragging = false;
-
-    const updateValue = (globalX: number): void => {
-      const localX = globalX - x;
-      const newVal = Math.max(0, Math.min(100, Math.round((localX / trackW) * 100)));
-      (this.settings as unknown as Record<string, number>)[key] = newVal;
-      const fw = (newVal / 100) * trackW;
-      fill.clear();
-      fill.beginFill(0x00ffcc, 0.85);
-      fill.drawRoundedRect(0, 0, Math.max(8, fw), trackH, 4);
-      fill.endFill();
-      knob.x = x + fw;
-      valText.text = `${newVal}`;
+    const update = (clientX: number): void => {
+      const rect = wrap.getBoundingClientRect();
+      const pct  = Math.max(0, Math.min(100, Math.round(((clientX - rect.left) / rect.width) * 100)));
+      (this.settings as Record<string, number>)[key] = pct;
+      fill.style.width = `${pct}%`;
+      knob.style.left  = `${pct}%`;
+      valEl.textContent = String(pct);
     };
 
-    track.eventMode = 'static';
-    track.cursor = 'ew-resize';
-    track.hitArea = { contains: (px: number, _py: number) => px >= 0 && px <= trackW && _py >= -10 && _py <= trackH + 10 } as unknown as import('pixi.js').IHitArea;
-    track.on('pointerdown', (e) => { dragging = true; updateValue(e.globalX); });
+    wrap.addEventListener('mousedown', (e) => { dragging = true; update(e.clientX); });
+    window.addEventListener('mousemove', (e) => { if (dragging) update(e.clientX); });
+    window.addEventListener('mouseup',   () => { dragging = false; });
+    wrap.style.cursor = 'ew-resize';
+    knob.style.cursor = 'ew-resize';
 
-    knob.on('pointerdown', (e) => { dragging = true; e.stopPropagation(); });
-
-    this.uiLayer.eventMode = 'static';
-    this.uiLayer.on('pointermove', (e) => { if (dragging) updateValue(e.globalX); });
-    this.uiLayer.on('pointerup', () => { dragging = false; });
-    this.uiLayer.on('pointerupoutside', () => { dragging = false; });
-
-    return y + 38;
+    sliderRow.appendChild(wrap);
+    sliderRow.appendChild(valEl);
+    row.appendChild(sliderRow);
+    return row;
   }
 
-  // ---- Toggle ----------------------------------------------------------------
+  private makeToggle(label: string, key: 'screenShake' | 'particleEffects'): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'settings-toggle-row';
 
-  private drawToggle(
-    label: string,
-    key: 'screenShake' | 'particleEffects',
-    x: number,
-    y: number,
-    w: number
-  ): number {
-    const color = this.settings[key] ? 0x00ffcc : 0x334455;
+    const lbl = document.createElement('div');
+    lbl.className = 'settings-toggle-label';
+    lbl.textContent = label;
+    row.appendChild(lbl);
 
-    const labelText = new Text(label, new TextStyle({
-      fontFamily: 'Courier New', fontSize: 12, fill: 0x88aabb,
-    }));
-    labelText.x = x;
-    labelText.y = y + 4;
-    this.uiLayer.addChild(labelText);
+    const sw = document.createElement('div');
+    sw.className = 'toggle-switch' + (this.settings[key] ? ' on' : '');
+    const knob = document.createElement('div');
+    knob.className = 'toggle-knob';
+    sw.appendChild(knob);
 
-    const tw = 54;
-    const th = 26;
-    const tx = x + w - tw;
-
-    const toggleBg = new Graphics();
-    toggleBg.beginFill(0x0a1822);
-    toggleBg.lineStyle(2, color, 0.9);
-    toggleBg.drawRoundedRect(0, 0, tw, th, th * 0.5);
-    toggleBg.endFill();
-    toggleBg.x = tx;
-    toggleBg.y = y;
-    if (this.settings[key]) {
-      toggleBg.filters = [new GlowFilter({ color: 0x00ffcc, distance: 8, outerStrength: 1.5, quality: 0.4 })];
-    }
-    toggleBg.eventMode = 'static';
-    toggleBg.cursor = 'pointer';
-    this.uiLayer.addChild(toggleBg);
-
-    const knobX = this.settings[key] ? tx + tw - th * 0.5 : tx + th * 0.5;
-    const knob = new Graphics();
-    knob.beginFill(color);
-    knob.drawCircle(0, 0, th * 0.35);
-    knob.endFill();
-    knob.x = knobX;
-    knob.y = y + th * 0.5;
-    this.uiLayer.addChild(knob);
-
-    const stateText = new Text(this.settings[key] ? t('settings.on') : t('settings.off'), new TextStyle({
-      fontFamily: 'Courier New', fontSize: 10, fill: color, fontWeight: 'bold',
-    }));
-    stateText.anchor.set(0.5, 0.5);
-    stateText.x = tx + tw * 0.5;
-    stateText.y = y + th * 0.5;
-    this.uiLayer.addChild(stateText);
-
-    toggleBg.on('pointerdown', () => {
-      (this.settings as unknown as Record<string, boolean>)[key] = !this.settings[key];
-      this.render();
+    sw.addEventListener('click', () => {
+      (this.settings as Record<string, boolean>)[key] = !this.settings[key];
+      sw.classList.toggle('on', this.settings[key]);
     });
-    knob.eventMode = 'static';
-    knob.cursor = 'pointer';
-    knob.on('pointerdown', () => {
-      (this.settings as unknown as Record<string, boolean>)[key] = !this.settings[key];
-      this.render();
-    });
-
-    return y + th + 8;
-  }
-
-  // ---- Keybinds --------------------------------------------------------------
-
-  private drawKeybinds(x: number, y: number, w: number): void {
-    const header = new Text(t('settings.keybinds'), new TextStyle({
-      fontFamily: 'Courier New', fontSize: 11, fill: 0x556677,
-    }));
-    header.x = x;
-    header.y = y;
-    this.uiLayer.addChild(header);
-
-    const binds: [string, string][] = [
-      ['1 - 5', t('settings.playCard')],
-      ['E',     t('settings.endTurn')],
-      ['ESC',   t('settings.pauseMenu')],
-    ];
-
-    const colW = (w - 20) / 3;
-    binds.forEach(([key, action], i) => {
-      const bx = x + i * colW;
-      const by = y + 18;
-
-      const keyBox = new Graphics();
-      keyBox.beginFill(0x0a1822);
-      keyBox.lineStyle(1.5, 0x336677, 0.8);
-      keyBox.drawRoundedRect(0, 0, 40, 22, 5);
-      keyBox.endFill();
-      keyBox.x = bx;
-      keyBox.y = by;
-      this.uiLayer.addChild(keyBox);
-
-      const keyText = new Text(key, new TextStyle({
-        fontFamily: 'Courier New', fontSize: 11, fill: 0x00ffcc, fontWeight: 'bold',
-      }));
-      keyText.anchor.set(0.5, 0.5);
-      keyText.x = bx + 20;
-      keyText.y = by + 11;
-      this.uiLayer.addChild(keyText);
-
-      const actionText = new Text(action, new TextStyle({
-        fontFamily: 'Courier New', fontSize: 10, fill: 0x556677,
-      }));
-      actionText.x = bx + 46;
-      actionText.y = by + 4;
-      this.uiLayer.addChild(actionText);
-    });
+    row.appendChild(sw);
+    return row;
   }
 }
