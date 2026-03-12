@@ -39,7 +39,7 @@ export class ShopRenderer {
   hide(): void { this.rootContainer.visible = false; }
 
   render(state: GameState): void {
-    this.uiLayer.removeChildren();
+    this.uiLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
     const w = this.app.screen.width;
     const h = this.app.screen.height;
     this.drawBackground(w, h);

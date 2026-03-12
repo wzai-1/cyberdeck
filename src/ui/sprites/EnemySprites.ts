@@ -1,4 +1,4 @@
-import { Container, Graphics } from 'pixi.js';
+import { Container, Graphics, Text, TextStyle } from 'pixi.js';
 import type { EnemyType } from '../../game/state';
 
 // ---- Public API ------------------------------------------------------------
@@ -12,20 +12,44 @@ export interface AnimatedEnemySprite {
 export function createEnemySprite(type: EnemyType, bossPhase = 1): AnimatedEnemySprite {
   const container = new Container();
   switch (type) {
-    case 'VIRUS_EXE':                          return makeVirus(container);
-    case 'FIREWALL_SYS':                       return makeFirewall(container, 0x2266ff);
-    case 'ELITE_FIREWALL':                     return makeFirewall(container, 0x44aaff);
-    case 'CORRUPTED_AI':                       return makeCorruptedAI(container, 0xaa44ff);
-    case 'ELITE_AI':                           return makeCorruptedAI(container, 0xcc66ff);
-    case 'SPAM_BOT':                           return makeSpamBot(container);
-    case 'RANSOMWARE':                         return makeRansomware(container);
-    case 'SYSTEM_OVERLORD':                    return makeBoss(container, bossPhase);
-    case 'ROOTKIT':                            return makeGeneric(container, 0x44ffcc);
-    case 'TROJAN':                             return makeGeneric(container, 0xff4488);
-    case 'DEEPFAKE':                           return makeGeneric(container, 0x22ccff);
-    case 'ELITE_WORM':                         return makeEliteWorm(container);
-    default:                                   return makeGeneric(container, 0x00ffcc);
+    case 'VIRUS_EXE':       return makeVirus(container);
+    case 'FIREWALL_SYS':    return makeFirewall(container, 0x2266ff, 'FIREWALL SYS');
+    case 'ELITE_FIREWALL':  return makeFirewall(container, 0x44aaff, 'ELITE FIREWALL');
+    case 'CORRUPTED_AI':    return makeCorruptedAI(container, 0xaa44ff, 'CORRUPTED AI');
+    case 'ELITE_AI':        return makeCorruptedAI(container, 0xcc66ff, 'ELITE AI');
+    case 'SPAM_BOT':        return makeSpamBot(container);
+    case 'RANSOMWARE':      return makeRansomware(container);
+    case 'SYSTEM_OVERLORD': return makeBoss(container, bossPhase);
+    case 'ROOTKIT':         return makeGeneric(container, 0x44ffcc, 'ROOTKIT');
+    case 'TROJAN':          return makeGeneric(container, 0xff4488, 'TROJAN');
+    case 'DEEPFAKE':        return makeGeneric(container, 0x22ccff, 'DEEPFAKE');
+    case 'ELITE_WORM':      return makeEliteWorm(container);
+    default:                return makeGeneric(container, 0x00ffcc, 'UNKNOWN');
   }
+}
+
+// ---- Name label helper -----------------------------------------------------
+
+function makeNameLabel(name: string, color: number): Text {
+  return new Text(name, new TextStyle({
+    fontFamily: 'Courier New',
+    fontSize: 22,
+    fill: color,
+    fontWeight: 'bold',
+    letterSpacing: 3,
+    dropShadow: true,
+    dropShadowColor: 0x000000,
+    dropShadowBlur: 6,
+    dropShadowDistance: 2,
+  }));
+}
+
+function addLabel(container: Container, name: string, color: number, topY: number): void {
+  const label = makeNameLabel(name, color);
+  label.anchor.set(0.5, 1);
+  label.x = 0;
+  label.y = topY;
+  container.addChild(label);
 }
 
 // ---- Helpers ----------------------------------------------------------------
@@ -60,6 +84,8 @@ function getBossColor(phase: number): number {
 function makeVirus(container: Container): AnimatedEnemySprite {
   const color = 0xff2222;
 
+  addLabel(container, 'VIRUS.EXE', color, -62);
+
   // Outer hexagon (static)
   const outerHex = new Graphics();
   drawPolygon(outerHex, 6, 45, color, 3, 0.12);
@@ -72,7 +98,6 @@ function makeVirus(container: Container): AnimatedEnemySprite {
   // Inner rotating hexagon container
   const innerCon = new Container();
   const innerHex = new Graphics();
-  // Dashed hex: draw as 6 short line segments
   const pts = hexPoints(6, 25);
   innerHex.lineStyle(2, color, 0.85);
   for (let i = 0; i < 6; i++) {
@@ -81,7 +106,7 @@ function makeVirus(container: Container): AnimatedEnemySprite {
     const mx = (x1 + x2) * 0.5;
     const my = (y1 + y2) * 0.5;
     innerHex.moveTo(x1, y1);
-    innerHex.lineTo(mx, my); // draw half-segment (creates "dashed" look)
+    innerHex.lineTo(mx, my);
   }
   innerCon.addChild(innerHex);
   container.addChild(innerCon);
@@ -90,7 +115,7 @@ function makeVirus(container: Container): AnimatedEnemySprite {
   const center = new Graphics();
   center.lineStyle(0);
   center.beginFill(color, 0.9);
-  center.drawCircle(0, 0, 5);
+  center.drawCircle(0, 0, 6);
   center.endFill();
   container.addChild(center);
 
@@ -99,7 +124,6 @@ function makeVirus(container: Container): AnimatedEnemySprite {
     update: (time) => {
       innerCon.rotation = time * 1.5;
 
-      // Redraw animated tentacles
       tentacles.clear();
       tentacles.lineStyle(2, color, 0.55);
       const hexPts = hexPoints(6, 45);
@@ -111,7 +135,6 @@ function makeVirus(container: Container): AnimatedEnemySprite {
         tentacles.lineTo(hx + Math.cos(ang) * ext, hy + Math.sin(ang) * ext);
       }
 
-      // Pulse glow
       center.alpha = 0.6 + Math.sin(time * 4) * 0.4;
     },
   };
@@ -119,7 +142,9 @@ function makeVirus(container: Container): AnimatedEnemySprite {
 
 // ---- FIREWALL_SYS: Blue brick fortress + shield arc + gate -----------------
 
-function makeFirewall(container: Container, color: number): AnimatedEnemySprite {
+function makeFirewall(container: Container, color: number, name: string): AnimatedEnemySprite {
+  addLabel(container, name, color, -56);
+
   // Wall body
   const wall = new Graphics();
   wall.lineStyle(3, color, 0.9);
@@ -172,8 +197,10 @@ function makeFirewall(container: Container, color: number): AnimatedEnemySprite 
 
 // ---- CORRUPTED_AI: Glitching circle head + data streams + random eye --------
 
-function makeCorruptedAI(container: Container, color: number): AnimatedEnemySprite {
+function makeCorruptedAI(container: Container, color: number, name: string): AnimatedEnemySprite {
   const glitchColor = 0x00ff88;
+
+  addLabel(container, name, color, -56);
 
   // Main head (static)
   const head = new Graphics();
@@ -193,7 +220,7 @@ function makeCorruptedAI(container: Container, color: number): AnimatedEnemySpri
   data.moveTo(-5, 40); data.lineTo(-8, 58);
   container.addChild(data);
 
-  // 3 glitch fragment circles (animated offset)
+  // 3 glitch fragment circles
   const frags: Graphics[] = [];
   const fragColors = [color, glitchColor, 0xff4488];
   const fragBaseOffsets: [number, number][] = [[-3, -2], [4, 1], [-1, 4]];
@@ -226,14 +253,12 @@ function makeCorruptedAI(container: Container, color: number): AnimatedEnemySpri
   return {
     container,
     update: (time) => {
-      // Glitch fragments drift
       for (let i = 0; i < frags.length; i++) {
         frags[i].x = fragBaseOffsets[i][0] + Math.sin(time * 3.1 + i * 2.1) * 5;
         frags[i].y = fragBaseOffsets[i][1] + Math.cos(time * 4.3 + i * 1.7) * 4;
         frags[i].alpha = 0.2 + Math.abs(Math.sin(time * 5 + i)) * 0.5;
       }
 
-      // Eye wanders
       eyeCon.x = Math.sin(time * 1.7) * 14;
       eyeCon.y = Math.cos(time * 2.3) * 14;
     },
@@ -244,6 +269,8 @@ function makeCorruptedAI(container: Container, color: number): AnimatedEnemySpri
 
 function makeSpamBot(container: Container): AnimatedEnemySprite {
   const color = 0xffcc00;
+
+  addLabel(container, 'SPAM BOT', color, -56);
 
   // Main square body
   const body = new Graphics();
@@ -268,7 +295,7 @@ function makeSpamBot(container: Container): AnimatedEnemySprite {
   body.moveTo(-16, 2); body.lineTo(0, 13); body.lineTo(16, 2);
   container.addChild(body);
 
-  // Antenna containers (for wobble rotation)
+  // Antenna containers
   const ant1Con = new Container();
   ant1Con.x = -10; ant1Con.y = -28;
   const ant1 = new Graphics();
@@ -319,10 +346,8 @@ function makeSpamBot(container: Container): AnimatedEnemySprite {
   return {
     container,
     update: (time) => {
-      // Wheels spin
       w1Con.rotation = time * 2.5;
       w2Con.rotation = time * 2.5;
-      // Antennas wobble
       ant1Con.rotation = Math.sin(time * 3) * 0.18;
       ant2Con.rotation = -Math.sin(time * 3 + 0.4) * 0.18;
     },
@@ -335,15 +360,16 @@ function makeRansomware(container: Container): AnimatedEnemySprite {
   const color = 0xff8800;
   const warnColor = 0xffee00;
 
+  addLabel(container, 'RANSOMWARE', color, -56);
+
   // Padlock body
   const padlock = new Graphics();
-  // Body rectangle
   padlock.lineStyle(3, color, 0.9);
   padlock.beginFill(color, 0.15);
   padlock.drawRoundedRect(-30, 0, 60, 50, 6);
   padlock.endFill();
 
-  // WARNING stripes diagonal
+  // WARNING stripes
   padlock.lineStyle(0);
   for (let i = 0; i < 4; i++) {
     padlock.beginFill(i % 2 === 0 ? color : 0x000000, 0.4);
@@ -351,7 +377,7 @@ function makeRansomware(container: Container): AnimatedEnemySprite {
     padlock.endFill();
   }
 
-  // Shackle (arc on top)
+  // Shackle
   padlock.lineStyle(5, color, 0.95);
   padlock.arc(0, 0, 22, Math.PI, 0);
 
@@ -382,7 +408,6 @@ function makeRansomware(container: Container): AnimatedEnemySprite {
   warnG.beginFill(0x000000, 0.7);
   warnG.drawRect(-32, 2, 64, 14);
   warnG.endFill();
-  // ! marks
   warnG.lineStyle(0);
   warnG.beginFill(warnColor, 1);
   for (let xi = -24; xi <= 24; xi += 16) {
@@ -396,127 +421,289 @@ function makeRansomware(container: Container): AnimatedEnemySprite {
     container,
     update: (time) => {
       chainCon.rotation = time * 0.4;
-      // Blink warning
       warnG.alpha = 0.5 + Math.abs(Math.sin(time * 2.5)) * 0.5;
       padlock.alpha = 0.7 + Math.sin(time * 1.5) * 0.25;
     },
   };
 }
 
-// ---- SYSTEM_OVERLORD (Boss): 3 rotating shapes, phase-based color ----------
+// ---- SYSTEM_OVERLORD (Boss): 180px screen-filling boss with giant slit eye --
 
 function makeBoss(container: Container, initialPhase = 1): AnimatedEnemySprite {
   let currentPhase = initialPhase;
   let color = getBossColor(initialPhase);
 
-  // Outer square container (rotates slowly)
+  // Sub-containers (all added once)
   const outerCon = new Container();
-  const outerSquare = new Graphics();
-  container.addChild(outerCon);
-  outerCon.addChild(outerSquare);
-
-  // Middle circle container (counter-rotates)
   const midCon = new Container();
-  const midCircle = new Graphics();
-  container.addChild(midCon);
-  midCon.addChild(midCircle);
-
-  // Inner triangle container (rotates fast)
+  const crackLayer = new Graphics();
   const triCon = new Container();
-  const triangle = new Graphics();
-  const eyeG = new Graphics();
-  container.addChild(triCon);
-  triCon.addChild(triangle);
-  triCon.addChild(eyeG);
-
-  // Lightning layer (phase 2+, redrawn each frame)
+  const eyeCon = new Container();
   const lightning = new Graphics();
+  const fragmentCon = new Container();
+
+  container.addChild(outerCon);
+  container.addChild(midCon);
+  container.addChild(crackLayer);
+  container.addChild(triCon);
   container.addChild(lightning);
+  container.addChild(fragmentCon);
 
-  function redrawShapes(c: number): void {
-    outerSquare.clear();
-    outerSquare.lineStyle(4, c, 0.9);
-    outerSquare.beginFill(c, 0.08);
-    outerSquare.drawRect(-65, -65, 130, 130);
-    outerSquare.endFill();
-    // Corner decorations
-    outerSquare.lineStyle(2, c, 0.5);
-    const corners: [number, number][] = [[-65, -65], [65, -65], [65, 65], [-65, 65]];
-    for (const [cx, cy] of corners) {
-      outerSquare.moveTo(cx, cy + Math.sign(cy) * -12); outerSquare.lineTo(cx, cy);
-      outerSquare.lineTo(cx + Math.sign(cx) * -12, cy);
-    }
+  // Labels (re-created on phase change)
+  let bossLabel: Text | null = null;
+  let phaseLabel: Text | null = null;
 
-    midCircle.clear();
-    midCircle.lineStyle(3, c, 0.85);
-    midCircle.beginFill(c, 0.06);
-    midCircle.drawCircle(0, 0, 48);
-    midCircle.endFill();
+  function createLabels(c: number, phase: number): void {
+    if (bossLabel) { container.removeChild(bossLabel); bossLabel.destroy(); }
+    if (phaseLabel) { container.removeChild(phaseLabel); phaseLabel.destroy(); }
 
-    triangle.clear();
-    triangle.lineStyle(3.5, c, 1);
-    triangle.beginFill(c, 0.18);
-    triangle.moveTo(0, -38); triangle.lineTo(33, 20); triangle.lineTo(-33, 20);
-    triangle.closePath();
-    triangle.endFill();
+    bossLabel = new Text('⚡ SYSTEM OVERLORD ⚡', new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 24,
+      fill: c,
+      fontWeight: 'bold',
+      letterSpacing: 4,
+      dropShadow: true,
+      dropShadowColor: 0x000000,
+      dropShadowBlur: 8,
+      dropShadowDistance: 3,
+    }));
+    bossLabel.anchor.set(0.5, 1);
+    bossLabel.x = 0;
+    bossLabel.y = -115;
+    container.addChild(bossLabel);
 
-    eyeG.clear();
-    eyeG.lineStyle(0);
-    eyeG.beginFill(0xffffff, 0.95);
-    eyeG.drawCircle(0, 0, 11);
-    eyeG.endFill();
-    eyeG.beginFill(c, 1);
-    eyeG.drawCircle(0, 0, 6);
-    eyeG.endFill();
-    eyeG.beginFill(0x000000, 0.8);
-    eyeG.drawCircle(0, 0, 2);
-    eyeG.endFill();
+    phaseLabel = new Text(`[ PHASE ${phase} ]`, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 14,
+      fill: c,
+      letterSpacing: 2,
+    }));
+    phaseLabel.anchor.set(0.5, 1);
+    phaseLabel.x = 0;
+    phaseLabel.y = -91;
+    phaseLabel.alpha = 0.7;
+    container.addChild(phaseLabel);
   }
 
-  // Initial draw
-  redrawShapes(color);
+  function rebuildShapes(c: number, phase: number): void {
+    // Clear old shape children
+    outerCon.removeChildren().forEach((ch) => ch.destroy({ children: true }));
+    midCon.removeChildren().forEach((ch) => ch.destroy({ children: true }));
+    triCon.removeChildren().forEach((ch) => ch.destroy({ children: true }));
+    eyeCon.removeChildren().forEach((ch) => ch.destroy({ children: true }));
+    fragmentCon.removeChildren().forEach((ch) => ch.destroy({ children: true }));
+    crackLayer.clear();
+    lightning.clear();
+
+    createLabels(c, phase);
+
+    // --- Outer rotating hexagon (80px radius) ---
+    const outerHex = new Graphics();
+    outerHex.lineStyle(5, c, 0.9);
+    outerHex.beginFill(c, 0.06);
+    const hPts = hexPoints(6, 80);
+    outerHex.moveTo(hPts[0][0], hPts[0][1]);
+    for (let i = 1; i < 6; i++) outerHex.lineTo(hPts[i][0], hPts[i][1]);
+    outerHex.closePath();
+    outerHex.endFill();
+    // Vertex spikes
+    outerHex.lineStyle(2, c, 0.4);
+    for (const [px, py] of hPts) {
+      const a = Math.atan2(py, px);
+      outerHex.moveTo(px, py);
+      outerHex.lineTo(px + Math.cos(a) * 18, py + Math.sin(a) * 18);
+    }
+    outerCon.addChild(outerHex);
+
+    // --- Middle counter-rotating circle (52px) with tick marks ---
+    const midCircle = new Graphics();
+    midCircle.lineStyle(3, c, 0.85);
+    midCircle.beginFill(c, 0.05);
+    midCircle.drawCircle(0, 0, 52);
+    midCircle.endFill();
+    midCircle.lineStyle(2, c, 0.45);
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      const r2 = i % 4 === 0 ? 38 : 44;
+      midCircle.moveTo(Math.cos(a) * 52, Math.sin(a) * 52);
+      midCircle.lineTo(Math.cos(a) * r2, Math.sin(a) * r2);
+    }
+    midCon.addChild(midCircle);
+
+    // --- Inner triangle (40px) ---
+    const triangle = new Graphics();
+    triangle.lineStyle(4, c, 1);
+    triangle.beginFill(c, 0.18);
+    triangle.moveTo(0, -42); triangle.lineTo(37, 23); triangle.lineTo(-37, 23);
+    triangle.closePath();
+    triangle.endFill();
+    triCon.addChild(triangle);
+    triCon.addChild(eyeCon);
+
+    // --- Giant slit-pupil eye (inside triangle) ---
+    // White sclera
+    const sclera = new Graphics();
+    sclera.lineStyle(2, 0xdddddd, 0.7);
+    sclera.beginFill(0xffffff, 0.92);
+    sclera.drawEllipse(0, 0, 28, 19);
+    sclera.endFill();
+    eyeCon.addChild(sclera);
+
+    // Phase 3: bloodshot veins before iris
+    if (phase >= 3) {
+      const veins = new Graphics();
+      veins.lineStyle(1.5, 0xff2200, 0.75);
+      const vData: [number, number, number, number][] = [
+        [-24, 5, -10, 2], [-20, -8, -6, -2], [18, -3, 6, 1],
+        [15, 8, 4, 3], [-6, -14, -1, -5], [12, -10, 3, -4],
+        [-18, 12, -4, 5], [20, -12, 7, -4],
+      ];
+      for (const [x1, y1, x2, y2] of vData) {
+        veins.moveTo(x1, y1); veins.lineTo(x2, y2);
+      }
+      eyeCon.addChild(veins);
+    }
+
+    // Iris (colored)
+    const irisColor = phase >= 3 ? 0xff0000 : c;
+    const iris = new Graphics();
+    iris.lineStyle(0);
+    iris.beginFill(irisColor, 1);
+    iris.drawEllipse(0, 0, 20, 14);
+    iris.endFill();
+    eyeCon.addChild(iris);
+
+    // Slit pupil (vertical)
+    const pupil = new Graphics();
+    pupil.lineStyle(0);
+    pupil.beginFill(0x000000, 0.95);
+    pupil.drawEllipse(0, 0, 5, 13);
+    pupil.endFill();
+    eyeCon.addChild(pupil);
+
+    // Glare
+    const glare = new Graphics();
+    glare.lineStyle(0);
+    glare.beginFill(0xffffff, 0.65);
+    glare.drawCircle(-7, -5, 4);
+    glare.endFill();
+    eyeCon.addChild(glare);
+
+    // --- Phase 2+: cracks ---
+    if (phase >= 2) {
+      const cracks: [number, number, number, number, number, number][] = [
+        [-70, -30, -15, 5, 40, 55],
+        [65, -40, 8, -8, -30, 50],
+        [-55, 20, -3, 2, 35, -50],
+        [20, 60, -2, -1, -30, -60],
+      ];
+      crackLayer.lineStyle(2.5, c, 0.75);
+      for (const [x1, y1, mx, my, x2, y2] of cracks) {
+        crackLayer.moveTo(x1, y1);
+        crackLayer.lineTo(mx, my);
+        crackLayer.lineTo(x2, y2);
+      }
+      // Energy leaking at crack midpoints
+      const energyColor = phase >= 3 ? 0xffffff : 0xaa44ff;
+      crackLayer.lineStyle(1.5, energyColor, 0.6);
+      for (const [, , mx, my] of cracks) {
+        for (let r = 0; r < 6; r++) {
+          const ra = (r / 6) * Math.PI * 2;
+          crackLayer.moveTo(mx, my);
+          crackLayer.lineTo(mx + Math.cos(ra) * 14, my + Math.sin(ra) * 14);
+        }
+      }
+    }
+
+    // --- Phase 3: flying fragments ---
+    if (phase >= 3) {
+      for (let i = 0; i < 8; i++) {
+        const frag = new Graphics();
+        const a = (i / 8) * Math.PI * 2;
+        const r = 62 + (i % 3) * 14;
+        const sz = 8 + (i % 4) * 4;
+        frag.lineStyle(2, c, 0.85);
+        frag.beginFill(c, 0.25);
+        // Triangle fragment
+        frag.moveTo(0, -sz);
+        frag.lineTo(sz * 0.7, sz * 0.4);
+        frag.lineTo(-sz * 0.7, sz * 0.4);
+        frag.closePath();
+        frag.endFill();
+        frag.x = Math.cos(a) * r;
+        frag.y = Math.sin(a) * r;
+        frag.rotation = a;
+        fragmentCon.addChild(frag);
+      }
+    }
+  }
+
+  rebuildShapes(color, currentPhase);
 
   return {
     container,
     update: (time, phase = 1) => {
-      // Redraw if phase changed
       if (phase !== currentPhase) {
         currentPhase = phase;
         color = getBossColor(phase);
-        redrawShapes(color);
+        rebuildShapes(color, phase);
       }
 
-      const speedMult = phase >= 3 ? 2.8 : phase === 2 ? 1.6 : 1.0;
+      const sp = phase >= 3 ? 2.2 : phase === 2 ? 1.5 : 1.0;
+      outerCon.rotation = time * 0.28 * sp;
+      midCon.rotation = -time * 0.55 * sp;
+      triCon.rotation = time * 0.12 * sp;
 
-      outerCon.rotation = time * 0.35 * speedMult;
-      midCon.rotation = -time * 0.7 * speedMult;
-      triCon.rotation = time * 1.4 * speedMult;
+      // Eye wander within triangle local space
+      eyeCon.x = Math.sin(time * 1.1) * 7;
+      eyeCon.y = Math.cos(time * 0.85) * 4;
+      const dilation = 1 + Math.sin(time * 2.3) * 0.08;
+      eyeCon.scale.set(dilation);
 
-      // Lightning bolts in phase 2+
+      // Lightning (phase 2+)
       lightning.clear();
       if (phase >= 2) {
-        const lColor = phase >= 3 ? 0xffffff : 0xaa44ff;
-        lightning.lineStyle(2, lColor, 0.75);
-        for (let b = 0; b < 4; b++) {
-          const a = (b / 4) * Math.PI * 2 + time * 1.5;
-          const x1 = Math.cos(a) * 33;
-          const y1 = Math.sin(a) * 22;
-          const x2 = Math.cos(a) * 48;
-          const y2 = Math.sin(a) * 48;
-          // Jagged midpoint
-          const mx = (x1 + x2) * 0.5 + (Math.random() - 0.5) * 18;
-          const my = (y1 + y2) * 0.5 + (Math.random() - 0.5) * 18;
+        const lc = phase >= 3 ? 0xffffff : 0xcc66ff;
+        lightning.lineStyle(2.5, lc, 0.8);
+        for (let b = 0; b < 6; b++) {
+          const a = (b / 6) * Math.PI * 2 + time * 1.4;
+          const x1 = Math.cos(a) * 38;
+          const y1 = Math.sin(a) * 30;
+          const x2 = Math.cos(a) * 82;
+          const y2 = Math.sin(a) * 82;
+          const mx = (x1 + x2) * 0.5 + (Math.random() - 0.5) * 24;
+          const my = (y1 + y2) * 0.5 + (Math.random() - 0.5) * 24;
           lightning.moveTo(x1, y1);
           lightning.lineTo(mx, my);
           lightning.lineTo(x2, y2);
         }
       }
 
+      // Fragment orbit (phase 3)
+      if (phase >= 3) {
+        const fc = fragmentCon.children.length;
+        for (let i = 0; i < fc; i++) {
+          const frag = fragmentCon.children[i];
+          const baseA = (i / fc) * Math.PI * 2;
+          const r = 65 + Math.sin(time * 1.8 + i) * 18;
+          frag.x = Math.cos(baseA + time * 0.7) * r;
+          frag.y = Math.sin(baseA + time * 0.7) * r;
+          frag.rotation = time * 1.5 + i;
+        }
+      }
+
       // Phase 3: blinding flash
       if (phase >= 3) {
-        container.alpha = 0.75 + Math.abs(Math.sin(time * 6)) * 0.25;
+        container.alpha = 0.75 + Math.abs(Math.sin(time * 5)) * 0.25;
       } else {
         container.alpha = 1;
+      }
+
+      // Label pulse
+      if (bossLabel) {
+        bossLabel.scale.set(1 + Math.sin(time * 1.8) * 0.04);
+        bossLabel.alpha = 0.85 + Math.sin(time * 2.5) * 0.15;
       }
     },
   };
@@ -527,7 +714,8 @@ function makeBoss(container: Container, initialPhase = 1): AnimatedEnemySprite {
 function makeEliteWorm(container: Container): AnimatedEnemySprite {
   const color = 0x44ff88;
 
-  // Segmented body (3 circles)
+  addLabel(container, 'ELITE WORM', color, -44);
+
   const segs: Container[] = [];
   for (let s = 0; s < 3; s++) {
     const segCon = new Container();
@@ -555,7 +743,6 @@ function makeEliteWorm(container: Container): AnimatedEnemySprite {
   return {
     container,
     update: (time) => {
-      // Undulating movement
       segs[1].y = Math.sin(time * 3) * 5;
       segs[2].y = Math.sin(time * 3 + 1) * 4;
       eyes.alpha = 0.6 + Math.abs(Math.sin(time * 2)) * 0.4;
@@ -565,7 +752,9 @@ function makeEliteWorm(container: Container): AnimatedEnemySprite {
 
 // ---- Generic: pulsing diamond (fallback) ------------------------------------
 
-function makeGeneric(container: Container, color: number): AnimatedEnemySprite {
+function makeGeneric(container: Container, color: number, name: string): AnimatedEnemySprite {
+  addLabel(container, name, color, -50);
+
   const body = new Graphics();
   body.lineStyle(3, color, 0.9);
   body.beginFill(color, 0.15);

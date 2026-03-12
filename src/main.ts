@@ -838,8 +838,8 @@ function showAboutDialog(): void {
       <div style="color:#556677;font-size:12px;line-height:1.7">
         A cyberpunk roguelike deckbuilder.<br>
         Build your deck, hack the system, defeat the boss.<br><br>
-        <span style="color:#00ffcc">Sprint 8</span> — UX Overhaul<br>
-        <span style="color:#336677">v0.8.0</span>
+        <span style="color:#00ffcc">Sprint 10</span> — Deep Polish<br>
+        <span style="color:#336677">v1.0.0</span>
       </div>
       <div style="color:#334455;font-size:11px;margin-top:16px">[CLICK TO CLOSE]</div>
     </div>

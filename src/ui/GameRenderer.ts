@@ -62,8 +62,22 @@ export class GameRenderer {
   private lastEnemyType = '';
   private lastBossPhase = 0;
 
+  // Enemy lurch animation offset (set on attack, decayed by animation)
+  private _enemyLurchOffset = 0;
+
+  // Red vignette overlay (player hurt)
+  private _vignetteG: Graphics | null = null;
+  private _vignetteAlpha = 0;
+
   // Tooltip layer (always on top)
   private tooltipLayer: Container;
+
+  // Tooltip hover timer
+  private _tooltipTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Victory hold (2s before card reward)
+  private _victoryDone = false;
+  private _victoryTimerRunning = false;
 
   // Cache layout coords so animations can target them
   private deckX = 0;
@@ -95,6 +109,7 @@ export class GameRenderer {
       this.updateAnimations(dt);
       this.updateChargeEffect();
       this.updateEnemySprite();
+      this.updateVignette(dt);
     });
 
     // Re-render on language change
@@ -116,8 +131,14 @@ export class GameRenderer {
     const w = this.app.screen.width;
     const h = this.app.screen.height;
 
+    // Reset victory state when not in card_reward phase
+    if (state.phase !== 'card_reward') {
+      this._victoryDone = false;
+      this._victoryTimerRunning = false;
+    }
+
     this.drawBackground(w, h);
-    this.uiLayer.removeChildren();
+    this.uiLayer.removeChildren().forEach((c) => c.destroy({ children: true }));
     this.uiLayer.clear();
 
     // Safety: purge any card-flash circles that somehow escaped their animation
@@ -129,7 +150,9 @@ export class GameRenderer {
 
     // Remove charge ring on each render; ticker recreates if still charging
     if (this.chargeRing) {
+      this.chargeRing.filters = [];
       this.effectsLayer.removeChild(this.chargeRing);
+      this.chargeRing.destroy({ children: true });
       this.chargeRing = null;
     }
 
@@ -152,6 +175,18 @@ export class GameRenderer {
       return;
     }
     if (state.phase === 'card_reward') {
+      if (!this._victoryDone) {
+        if (!this._victoryTimerRunning) {
+          this._victoryTimerRunning = true;
+          setTimeout(() => {
+            this._victoryTimerRunning = false;
+            this._victoryDone = true;
+            if (this.lastState) this.render(this.lastState);
+          }, 2000);
+        }
+        this.renderVictoryHold(state, w, h);
+        return;
+      }
       this.renderCardReward(state, w, h);
       return;
     }
@@ -193,6 +228,7 @@ export class GameRenderer {
       cardView.alpha = p < 0.7 ? 1 : 1 - (p - 0.7) / 0.3;
     }, () => {
       this.effectsLayer.removeChild(cardView);
+      cardView.destroy({ children: true });
       this.spawnCardFlash(targetX, targetY);
       onDone();
     });
@@ -232,6 +268,7 @@ export class GameRenderer {
         back.alpha = p < 0.85 ? 0.85 : 0.85 * (1 - (p - 0.85) / 0.15);
       }, () => {
         this.effectsLayer.removeChild(back);
+        back.destroy({ children: true });
       });
     }
   }
@@ -252,9 +289,10 @@ export class GameRenderer {
     }
 
     if (type !== this.lastEnemyType || phase !== this.lastBossPhase) {
-      // Remove old sprite
+      // Remove and destroy old sprite
       if (this.enemySprite) {
         this.effectsLayer.removeChild(this.enemySprite.container);
+        this.enemySprite.container.destroy({ children: true });
         this.enemySprite = null;
       }
       // Create new sprite
@@ -281,7 +319,7 @@ export class GameRenderer {
     const baseY = isBoss ? h * 0.24 : h * 0.22;
     const bobOffset = Math.sin(this.idleTime * 1.8 + 1.5) * 2;
 
-    this.enemySprite.container.x = w * 0.5;
+    this.enemySprite.container.x = w * 0.5 + this._enemyLurchOffset;
     this.enemySprite.container.y = baseY + bobOffset;
     this.enemySprite.update(this.idleTime, this.lastState.bossPhase);
   }
@@ -658,9 +696,11 @@ export class GameRenderer {
     const baseCenterX = w * 0.5;
     const baseY = h * 0.72;
 
+    const isPlayerTurn = state.phase === 'player_turn';
+
     state.hand.forEach((card, i) => {
-      const t = totalCards > 1 ? i / (totalCards - 1) : 0.5;
-      const tCen = t - 0.5;
+      const tPos = totalCards > 1 ? i / (totalCards - 1) : 0.5;
+      const tCen = tPos - 0.5;
       const angleDeg = tCen * fanSpread;
       const angleRad = angleDeg * (Math.PI / 180);
       const yArc = tCen * tCen * 28;
@@ -668,28 +708,42 @@ export class GameRenderer {
       const cx = baseCenterX - totalW * 0.5 + i * spacing + CARD_W * 0.5;
       const cy = baseY + yArc + CARD_H * 0.5;
 
-      const cardView = this.createCardGraphic(card, false);
+      // Determine affordability
+      const canAfford = isPlayerTurn && (state.zeroCostTurn || state.player.mana >= card.cost);
+      const isCurse = card.rarity === 'curse';
+      const unplayable = !isPlayerTurn || isCurse;
+
+      const cardView = this.createCardGraphic(card, false, !canAfford && !unplayable);
       cardView.pivot.set(CARD_W * 0.5, CARD_H * 0.5);
       cardView.x = cx;
       cardView.y = cy;
       cardView.rotation = angleRad;
       cardView.zIndex = i;
 
+      // Grey out unaffordable or unplayable cards
+      if (!canAfford || unplayable) {
+        cardView.alpha = unplayable ? 0.45 : 0.6;
+      }
+
       const origY = cy;
       const origRot = angleRad;
-
       const typeColor = CARD_TYPE_COLORS[card.type] ?? CARD_TYPE_COLORS.skill;
 
       cardView.eventMode = 'static';
-      cardView.cursor = 'pointer';
+      cardView.cursor = canAfford && isPlayerTurn ? 'pointer' : 'default';
 
       cardView.on('pointerover', () => {
         cardView.scale.set(1.15);
         cardView.y = origY - 32;
         cardView.rotation = 0;
         cardView.zIndex = 100;
-        cardView.filters = [new GlowFilter({ color: typeColor, distance: 28, outerStrength: 4, quality: 0.5 })];
-        this.showCardTooltip(card, cx, origY - 32 - CARD_H * 0.5 - 14);
+        const glowColor = canAfford ? typeColor : 0x444444;
+        cardView.filters = [new GlowFilter({ color: glowColor, distance: 28, outerStrength: canAfford ? 4 : 1.5, quality: 0.5 })];
+        // Tooltip with 0.3s delay
+        if (this._tooltipTimer) clearTimeout(this._tooltipTimer);
+        this._tooltipTimer = setTimeout(() => {
+          this.showCardTooltip(card, cx, origY - 32 - CARD_H * 0.5 - 14);
+        }, 300);
       });
       cardView.on('pointerout', () => {
         cardView.scale.set(1.0);
@@ -697,9 +751,11 @@ export class GameRenderer {
         cardView.rotation = origRot;
         cardView.zIndex = i;
         cardView.filters = [new GlowFilter({ color: typeColor, distance: 12, outerStrength: 1.8, quality: 0.4 })];
+        if (this._tooltipTimer) { clearTimeout(this._tooltipTimer); this._tooltipTimer = null; }
         this.hideCardTooltip();
       });
       cardView.on('pointerdown', () => {
+        if (!canAfford || !isPlayerTurn) return;
         const bounds = cardView.getBounds();
         this.handlers.onCardClick(card.id, {
           x: bounds.x + bounds.width * 0.5,
@@ -715,7 +771,8 @@ export class GameRenderer {
 
   private renderEndTurnButton(state: GameState, w: number, h: number): void {
     const active = state.phase === 'player_turn';
-    const color = active ? 0xffaa00 : 0x444444;
+    const waiting = state.phase === 'enemy_turn';
+    const color = active ? 0xffaa00 : waiting ? 0xff6622 : 0x444444;
 
     const btn = new Graphics();
     btn.beginFill(0x111122, 1);
@@ -724,7 +781,7 @@ export class GameRenderer {
     btn.endFill();
     btn.x = w - 196;
     btn.y = h * 0.83;
-    btn.filters = [new GlowFilter({ color, distance: 12, outerStrength: active ? 2.5 : 0.5, quality: 0.4 })];
+    btn.filters = [new GlowFilter({ color, distance: 12, outerStrength: active ? 2.5 : waiting ? 1.5 : 0.5, quality: 0.4 })];
 
     if (active) {
       btn.eventMode = 'static';
@@ -734,8 +791,14 @@ export class GameRenderer {
       btn.on('pointerout', () => btn.scale.set(1.0));
     }
 
-    const label = new Text(t('ui.endTurn'), new TextStyle({
-      fontFamily: 'Courier New', fontSize: 16, fill: color, fontWeight: 'bold',
+    const labelStr = waiting
+      ? '[ WAIT... ]'
+      : t('ui.endTurn');
+    const label = new Text(labelStr, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: waiting ? 14 : 16,
+      fill: color,
+      fontWeight: 'bold',
     }));
     label.anchor.set(0.5, 0.5);
     label.x = btn.x + 85;
@@ -986,6 +1049,7 @@ export class GameRenderer {
 
   private drawHpBar(x: number, y: number, bw: number, bh: number, hp: number, maxHp: number, color: number): void {
     const ratio = Math.max(0, Math.min(1, hp / maxHp));
+    const isCritical = ratio < 0.2 && ratio > 0;
 
     const bg = new Graphics();
     bg.beginFill(0x0a0b14);
@@ -994,20 +1058,26 @@ export class GameRenderer {
     this.uiLayer.addChild(bg);
 
     if (ratio > 0) {
-      const fillColor = ratio > 0.5 ? color : ratio > 0.25 ? 0xffaa00 : 0xff2222;
+      const fillColor = isCritical ? 0xff2222 : ratio > 0.5 ? color : 0xffaa00;
       const fill = new Graphics();
       fill.beginFill(fillColor);
       fill.drawRoundedRect(x, y, bw * ratio, bh, 4);
       fill.endFill();
-      fill.filters = [new GlowFilter({ color: fillColor, distance: 8, outerStrength: 1.5, quality: 0.3 })];
+      const glowStrength = isCritical
+        ? 1.5 + Math.abs(Math.sin(this.pulseTime * 6)) * 3
+        : 1.5;
+      fill.filters = [new GlowFilter({ color: fillColor, distance: 8, outerStrength: glowStrength, quality: 0.3 })];
       this.uiLayer.addChild(fill);
     }
 
     const txt = new Text(`${hp}/${maxHp}`, new TextStyle({
-      fontFamily: 'Courier New', fontSize: 11, fill: color, fontWeight: 'bold',
+      fontFamily: 'Courier New', fontSize: 11, fill: isCritical ? 0xff2222 : color, fontWeight: 'bold',
     }));
     txt.x = x + bw + 7;
     txt.y = y - 1;
+    if (isCritical) {
+      txt.alpha = 0.7 + Math.abs(Math.sin(this.pulseTime * 6)) * 0.3;
+    }
     this.uiLayer.addChild(txt);
   }
 
@@ -1027,7 +1097,7 @@ export class GameRenderer {
 
   // ---- Card graphics -------------------------------------------------------
 
-  private createCardGraphic(card: Card, isGhost: boolean): Graphics {
+  private createCardGraphic(card: Card, isGhost: boolean, redCost = false): Graphics {
     // Border color by rarity
     const rarityColors: Record<string, number> = {
       common:    0x00ffcc,
@@ -1082,10 +1152,11 @@ export class GameRenderer {
     nameText.y = 9;
     g.addChild(nameText);
 
-    // Cost: big circle top-LEFT (move to left per sprint spec)
+    // Cost: big circle bottom-LEFT; red if player can't afford it
+    const costCircleColor = redCost ? 0xff3322 : 0xffaa00;
     const costBg = new Graphics();
     costBg.beginFill(0x060c14, 0.95);
-    costBg.lineStyle(2, 0xffaa00, 0.9);
+    costBg.lineStyle(2, costCircleColor, 0.9);
     costBg.drawCircle(0, 0, 14);
     costBg.endFill();
     costBg.x = 22;
@@ -1093,7 +1164,7 @@ export class GameRenderer {
     g.addChild(costBg);
 
     const costText = new Text(`${card.cost}`, new TextStyle({
-      fontFamily: 'Courier New', fontSize: 14, fill: 0xffaa00, fontWeight: 'bold',
+      fontFamily: 'Courier New', fontSize: 14, fill: costCircleColor, fontWeight: 'bold',
     }));
     costText.anchor.set(0.5, 0.5);
     costText.x = 22;
@@ -1264,12 +1335,16 @@ export class GameRenderer {
       this.spawnFloatNumber(ex + 35, ey - 60, blocked, 0x4488ff, '-');
     }
 
-    // Player took damage
+    // Player took damage — enemy lurch + red vignette
     if (next.player.hp < prev.player.hp) {
       const amount = prev.player.hp - next.player.hp;
       this.spawnFloatNumber(px, py - 60, amount, 0xff4466, '-');
       this.flashTarget(px, py, 0x880022, 90, 60);
       if (amount > 10) this.screenShake(7, 0.25);
+      // Enemy lurches toward player then back
+      this.lurchEnemy(50);
+      // Red vignette flash
+      this._vignetteAlpha = Math.min(1, this._vignetteAlpha + 0.65);
     }
 
     // Player healed
@@ -1284,7 +1359,15 @@ export class GameRenderer {
       this.spawnFloatNumber(px + 30, py - 45, gained, 0x66ddff, '+');
     }
 
-    // Victory
+    // Turn change flash text
+    if (next.phase === 'player_turn' && prev.phase === 'enemy_turn') {
+      this.spawnTurnText('YOUR TURN', 0x00ffcc, w, h);
+    }
+    if (next.phase === 'enemy_turn' && prev.phase === 'player_turn') {
+      this.spawnTurnText('ENEMY TURN', 0xff2222, w, h);
+    }
+
+    // Victory particles
     if (next.phase === 'card_reward' && prev.phase !== 'card_reward') {
       this.spawnVictoryParticles(w * 0.5, h * 0.4);
     }
@@ -1302,6 +1385,7 @@ export class GameRenderer {
 
     this.addAnimation(0.5, (p) => { flash.alpha = 0.4 * (1 - p); }, () => {
       this.effectsLayer.removeChild(flash);
+      flash.destroy({ children: true });
     });
 
     const phaseText = new Text(`— PHASE ${phase} —`, new TextStyle({
@@ -1316,7 +1400,10 @@ export class GameRenderer {
     this.addAnimation(1.6, (p) => {
       phaseText.scale.set(0.7 + p * 0.5);
       phaseText.alpha = p < 0.3 ? p / 0.3 : p > 0.7 ? 1 - (p - 0.7) / 0.3 : 1;
-    }, () => { this.effectsLayer.removeChild(phaseText); });
+    }, () => {
+      this.effectsLayer.removeChild(phaseText);
+      phaseText.destroy({ children: true });
+    });
 
     this.screenShake(16, 0.5);
   }
@@ -1337,7 +1424,10 @@ export class GameRenderer {
       text.y = startY - p * 50;
       text.alpha = p < 0.5 ? 1 : 1 - (p - 0.5) * 2;
       text.scale.set(1 + p * 0.3);
-    }, () => { this.effectsLayer.removeChild(text); });
+    }, () => {
+      this.effectsLayer.removeChild(text);
+      text.destroy({ children: true });
+    });
   }
 
   private flashTarget(cx: number, cy: number, color: number, hw: number, hh: number): void {
@@ -1349,6 +1439,7 @@ export class GameRenderer {
 
     this.addAnimation(0.22, (p) => { flash.alpha = 0.6 * (1 - p); }, () => {
       this.effectsLayer.removeChild(flash);
+      flash.destroy({ children: true });
     });
   }
 
@@ -1410,7 +1501,10 @@ export class GameRenderer {
         particle.y = sy + vy * p + 40 * p * p;
         particle.alpha = p < 0.6 ? 1 : 1 - (p - 0.6) / 0.4;
         particle.scale.set(1 - p * 0.4);
-      }, () => { this.effectsLayer.removeChild(particle); });
+      }, () => {
+        this.effectsLayer.removeChild(particle);
+        particle.destroy({ children: true });
+      });
     }
   }
 
@@ -1435,7 +1529,9 @@ export class GameRenderer {
       this.chargeRing.alpha = 0.6 + Math.sin(this.pulseTime * 5) * 0.3;
     } else {
       if (this.chargeRing) {
+        this.chargeRing.filters = [];
         this.effectsLayer.removeChild(this.chargeRing);
+        this.chargeRing.destroy({ children: true });
         this.chargeRing = null;
       }
     }
@@ -1571,51 +1667,319 @@ export class GameRenderer {
 
   // ---- Sprite drawing -------------------------------------------------------
 
-  /** Draw a pixel-art style hacker figure centered at (0,0). */
+  /** Draw a pixel-art style player figure centered at (0,0). Varies by class. */
   private drawPlayerSprite(g: Graphics, playerClass: string, color: number): void {
-    const alpha = 0.85;
-    g.lineStyle(0);
+    const breathAmt = Math.sin(this.idleTime * 1.8) * 1.5;
 
-    // Body
-    g.beginFill(color, alpha * 0.25);
-    g.drawRect(-12, -8, 24, 22);
+    if (playerClass === 'WARRIOR') {
+      this.drawWarriorSprite(g, color, breathAmt);
+    } else if (playerClass === 'GHOST') {
+      this.drawGhostSprite(g, color, breathAmt);
+    } else {
+      this.drawHackerSprite(g, color, breathAmt);
+    }
+  }
+
+  /** HACKER: crouched figure with laptop, matrix symbols floating */
+  private drawHackerSprite(g: Graphics, color: number, breathAmt: number): void {
+    const alpha = 0.88;
+
+    // Body (slightly crouched)
+    g.lineStyle(0);
+    g.beginFill(color, alpha * 0.2);
+    g.drawRect(-10, -4 + breathAmt * 0.3, 20, 20);
     g.endFill();
     g.lineStyle(2, color, alpha);
-    g.drawRect(-12, -8, 24, 22);
+    g.drawRect(-10, -4 + breathAmt * 0.3, 20, 20);
 
     // Head
     g.lineStyle(0);
-    g.beginFill(color, alpha * 0.3);
-    g.drawCircle(0, -20, 12);
+    g.beginFill(color, alpha * 0.25);
+    g.drawCircle(2, -17 + breathAmt * 0.5, 11);
     g.endFill();
     g.lineStyle(2, color, alpha);
-    g.drawCircle(0, -20, 12);
+    g.drawCircle(2, -17 + breathAmt * 0.5, 11);
 
-    // Visor
+    // Visor glow bar
     g.lineStyle(3, color, alpha);
-    g.moveTo(-8, -20); g.lineTo(8, -20);
+    g.moveTo(-5, -17 + breathAmt * 0.5);
+    g.lineTo(9, -17 + breathAmt * 0.5);
 
-    // Arms
+    // Arms reaching forward
     g.lineStyle(2, color, alpha * 0.7);
-    g.moveTo(-12, -4); g.lineTo(-22, 6); g.moveTo(-22, 6); g.lineTo(-18, 14);
-    g.moveTo(12, -4); g.lineTo(22, 6); g.moveTo(22, 6); g.lineTo(18, 14);
+    g.moveTo(-10, 0 + breathAmt * 0.3);
+    g.lineTo(-20, 6);
+    g.moveTo(10, 0 + breathAmt * 0.3);
+    g.lineTo(20, 6);
 
-    // Class-specific glyph
-    g.lineStyle(1.5, color, alpha * 0.6);
-    if (playerClass === 'HACKER') {
-      g.moveTo(-8, -2); g.lineTo(-2, -2); g.moveTo(-2, -2); g.lineTo(-2, 4); g.moveTo(2, 0); g.lineTo(8, 0);
-    } else if (playerClass === 'WARRIOR') {
-      g.moveTo(-6, -2); g.lineTo(0, -6); g.lineTo(6, -2); g.lineTo(6, 6); g.lineTo(0, 10); g.lineTo(-6, 6); g.lineTo(-6, -2);
-    } else {
-      // Ghost: dots
+    // Laptop
+    g.lineStyle(1.5, color, alpha * 0.85);
+    g.beginFill(0x001a0d, 0.9);
+    g.drawRect(-14, 12, 28, 16);
+    g.endFill();
+    // Screen glow (animated)
+    g.lineStyle(0);
+    g.beginFill(color, 0.18 + Math.sin(this.idleTime * 2.5) * 0.08);
+    g.drawRect(-12, 13, 24, 14);
+    g.endFill();
+    // Hinge line
+    g.lineStyle(1, color, alpha * 0.5);
+    g.moveTo(-14, 12); g.lineTo(14, 12);
+
+    // Matrix floating symbols (3 nodes)
+    for (let i = 0; i < 3; i++) {
+      const sx = -16 + i * 16 + Math.sin(this.idleTime * 1.2 + i * 2) * 4;
+      const sy = -34 + Math.sin(this.idleTime * 2 + i * 1.4) * 3;
       g.lineStyle(0);
-      g.beginFill(color, alpha * 0.5);
-      g.drawCircle(-4, 2, 2);
-      g.drawCircle(4, 2, 2);
+      g.beginFill(color, 0.35 + Math.sin(this.idleTime * 3 + i) * 0.2);
+      g.drawCircle(sx, sy, 2.5);
+      g.endFill();
+    }
+    // Connecting circuit lines between nodes
+    g.lineStyle(1, color, 0.3);
+    g.moveTo(-6, -30); g.lineTo(-2, -25); g.moveTo(-2, -25); g.lineTo(4, -25);
+
+    g.lineStyle(0);
+  }
+
+  /** WARRIOR: upright armored figure with shield and sword */
+  private drawWarriorSprite(g: Graphics, color: number, breathAmt: number): void {
+    const alpha = 0.88;
+
+    // Body armor (broad, upright)
+    g.lineStyle(0);
+    g.beginFill(color, alpha * 0.22);
+    g.drawRect(-13, -8 + breathAmt * 0.2, 26, 26);
+    g.endFill();
+    g.lineStyle(2.5, color, alpha);
+    g.drawRect(-13, -8 + breathAmt * 0.2, 26, 26);
+
+    // Shoulder armor plates
+    g.lineStyle(0);
+    g.beginFill(color, alpha * 0.38);
+    g.drawRect(-22, -8 + breathAmt * 0.2, 9, 11);
+    g.drawRect(13, -8 + breathAmt * 0.2, 9, 11);
+    g.endFill();
+    g.lineStyle(1.5, color, alpha);
+    g.drawRect(-22, -8 + breathAmt * 0.2, 9, 11);
+    g.drawRect(13, -8 + breathAmt * 0.2, 9, 11);
+
+    // Head (armored helmet)
+    g.lineStyle(0);
+    g.beginFill(color, alpha * 0.3);
+    g.drawRoundedRect(-10, -26 + breathAmt * 0.5, 20, 20, 3);
+    g.endFill();
+    g.lineStyle(2, color, alpha);
+    g.drawRoundedRect(-10, -26 + breathAmt * 0.5, 20, 20, 3);
+
+    // Visor slit
+    g.lineStyle(3, color, alpha);
+    g.moveTo(-7, -19 + breathAmt * 0.5);
+    g.lineTo(7, -19 + breathAmt * 0.5);
+
+    // Energy shield (hexagon outline, left arm)
+    const shx = -36;
+    const shy = breathAmt * 0.3;
+    const shR = 15;
+    g.lineStyle(2, color, alpha * 0.8);
+    g.beginFill(color, 0.08 + Math.sin(this.idleTime * 2) * 0.04);
+    // Simplified hexagon
+    const shAngles = [0, 60, 120, 180, 240, 300].map((a) => a * Math.PI / 180);
+    g.moveTo(shx + Math.cos(shAngles[0]) * shR, shy + Math.sin(shAngles[0]) * shR);
+    for (let i = 1; i < 6; i++) {
+      g.lineTo(shx + Math.cos(shAngles[i]) * shR, shy + Math.sin(shAngles[i]) * shR);
+    }
+    g.closePath();
+    g.endFill();
+
+    // Left arm holding shield
+    g.lineStyle(2, color, alpha * 0.65);
+    g.moveTo(-13, -4 + breathAmt * 0.3);
+    g.lineTo(shx + 8, shy);
+
+    // Sword (diagonal line, right side)
+    const swX = 26; const swY = -28 + breathAmt * 0.5;
+    g.lineStyle(3, color, alpha);
+    g.moveTo(16, 4 + breathAmt * 0.3);
+    g.lineTo(swX, swY);
+    // Crossguard
+    g.lineStyle(2, color, alpha);
+    g.moveTo(swX - 6, swY + 6);
+    g.lineTo(swX + 6, swY - 6);
+
+    // Energy aura (subtle pulsing circle)
+    g.lineStyle(1.5, color, 0.15 + Math.sin(this.idleTime * 2.5) * 0.08);
+    g.drawCircle(0, 0, 34);
+
+    g.lineStyle(0);
+  }
+
+  /** GHOST: semi-transparent outline with flowing cloak and shimmer */
+  private drawGhostSprite(g: Graphics, color: number, breathAmt: number): void {
+    const alpha = 0.88;
+    const ghostAlpha = alpha * 0.58; // Semi-transparent
+
+    // Phase-shifted ghost copy (subtle offset copy at very low alpha)
+    const offset = Math.sin(this.idleTime * 3.5) * 3;
+    g.lineStyle(1, color, ghostAlpha * 0.15);
+    g.drawCircle(offset - 2, -19 + breathAmt * 0.5, 11);
+    g.drawRect(-11 + offset, -5 + breathAmt * 0.3, 22, 22);
+
+    // Main body outline
+    g.lineStyle(0);
+    g.beginFill(color, ghostAlpha * 0.12);
+    g.drawRect(-11, -5 + breathAmt * 0.3, 22, 22);
+    g.endFill();
+    g.lineStyle(2, color, ghostAlpha);
+    g.drawRect(-11, -5 + breathAmt * 0.3, 22, 22);
+
+    // Head
+    g.lineStyle(0);
+    g.beginFill(color, ghostAlpha * 0.15);
+    g.drawCircle(0, -19 + breathAmt * 0.5, 11);
+    g.endFill();
+    g.lineStyle(2, color, ghostAlpha);
+    g.drawCircle(0, -19 + breathAmt * 0.5, 11);
+
+    // Glowing eyes (full alpha)
+    g.lineStyle(0);
+    const eyePulse = 0.75 + Math.abs(Math.sin(this.idleTime * 4)) * 0.25;
+    g.beginFill(color, eyePulse);
+    g.drawCircle(-5, -19 + breathAmt * 0.5, 3);
+    g.drawCircle(5, -19 + breathAmt * 0.5, 3);
+    g.endFill();
+
+    // Flowing cloak wings
+    const flutter = Math.sin(this.idleTime * 2.2) * 6;
+    g.lineStyle(1.5, color, ghostAlpha * 0.55);
+    g.moveTo(-11, -1 + breathAmt * 0.3);
+    g.lineTo(-30 + flutter, 9);
+    g.lineTo(-26 + flutter, 24);
+    g.lineTo(-11, 17 + breathAmt * 0.3);
+    g.moveTo(11, -1 + breathAmt * 0.3);
+    g.lineTo(30 - flutter, 9);
+    g.lineTo(26 - flutter, 24);
+    g.lineTo(11, 17 + breathAmt * 0.3);
+
+    // Shimmer particles
+    for (let i = 0; i < 5; i++) {
+      const sx = -22 + Math.sin(this.idleTime * 1.4 + i * 1.3) * 26;
+      const sy = -32 + Math.cos(this.idleTime * 2.1 + i * 0.9) * 22;
+      const pa = 0.25 + Math.abs(Math.sin(this.idleTime * 3.5 + i * 1.1)) * 0.35;
+      g.lineStyle(0);
+      g.beginFill(color, pa);
+      g.drawCircle(sx, sy, 2);
       g.endFill();
     }
 
     g.lineStyle(0);
+  }
+
+  // ---- New combat effect methods -------------------------------------------
+
+  /** Show turn-start flash text: 'YOUR TURN' or 'ENEMY TURN' */
+  private spawnTurnText(label: string, color: number, w: number, h: number): void {
+    const txt = new Text(label, new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 36,
+      fill: color,
+      fontWeight: 'bold',
+      letterSpacing: 6,
+    }));
+    txt.anchor.set(0.5, 0.5);
+    txt.x = w * 0.5;
+    txt.y = h * 0.5;
+    txt.filters = [new GlowFilter({ color, distance: 22, outerStrength: 3.5, quality: 0.5 })];
+    this.effectsLayer.addChild(txt);
+
+    this.addAnimation(1.1, (p) => {
+      txt.scale.set(0.75 + p * 0.4);
+      txt.alpha = p < 0.18 ? p / 0.18 : p > 0.62 ? 1 - (p - 0.62) / 0.38 : 1;
+      txt.y = h * 0.5 - p * 18;
+    }, () => {
+      this.effectsLayer.removeChild(txt);
+      txt.destroy({ children: true });
+    });
+  }
+
+  /** Lurch enemy sprite forward then back when it attacks */
+  private lurchEnemy(amplitude: number): void {
+    this.addAnimation(0.48, (p) => {
+      const lurch = p < 0.28
+        ? -(p / 0.28) * amplitude
+        : -(1 - (p - 0.28) / 0.72) * amplitude;
+      this._enemyLurchOffset = lurch;
+    }, () => {
+      this._enemyLurchOffset = 0;
+    });
+  }
+
+  /** Update the red vignette overlay (called from ticker) */
+  private updateVignette(dt: number): void {
+    if (this._vignetteAlpha <= 0) {
+      if (this._vignetteG) this._vignetteG.visible = false;
+      return;
+    }
+    this._vignetteAlpha = Math.max(0, this._vignetteAlpha - dt * 2.8);
+
+    if (!this._vignetteG) {
+      this._vignetteG = new Graphics();
+      this.effectsLayer.addChild(this._vignetteG);
+    }
+    const va = this._vignetteAlpha;
+    const w = this.app.screen.width;
+    const h = this.app.screen.height;
+    const edgeW = 90;
+    this._vignetteG.clear();
+    this._vignetteG.visible = true;
+    // Four edge panels
+    this._vignetteG.beginFill(0xff0000, va * 0.42); this._vignetteG.drawRect(0, 0, edgeW, h); this._vignetteG.endFill();
+    this._vignetteG.beginFill(0xff0000, va * 0.42); this._vignetteG.drawRect(w - edgeW, 0, edgeW, h); this._vignetteG.endFill();
+    this._vignetteG.beginFill(0xff0000, va * 0.42); this._vignetteG.drawRect(0, 0, w, edgeW); this._vignetteG.endFill();
+    this._vignetteG.beginFill(0xff0000, va * 0.42); this._vignetteG.drawRect(0, h - edgeW, w, edgeW); this._vignetteG.endFill();
+  }
+
+  /** Victory hold screen (shown for 2s before card reward) */
+  private renderVictoryHold(state: GameState, w: number, h: number): void {
+    const overlay = new Graphics();
+    overlay.beginFill(0x020508, 0.9);
+    overlay.drawRect(0, 0, w, h);
+    overlay.endFill();
+    this.uiLayer.addChild(overlay);
+
+    const pulse = 1 + Math.sin(this.pulseTime * 4) * 0.04;
+    const title = new Text('TARGET ELIMINATED', new TextStyle({
+      fontFamily: 'Courier New',
+      fontSize: 42,
+      fill: 0x00ffcc,
+      fontWeight: 'bold',
+      letterSpacing: 4,
+    }));
+    title.anchor.set(0.5, 0.5);
+    title.x = w * 0.5;
+    title.y = h * 0.38;
+    title.scale.set(pulse);
+    title.filters = [new GlowFilter({ color: 0x00ffcc, distance: 30, outerStrength: 4, quality: 0.5 })];
+    this.uiLayer.addChild(title);
+
+    const enemyName = state.enemy.type.replace(/_/g, ' ');
+    const sub = new Text(`${enemyName} DESTROYED`, new TextStyle({
+      fontFamily: 'Courier New', fontSize: 18, fill: 0x00ffcc,
+    }));
+    sub.anchor.set(0.5, 0.5);
+    sub.x = w * 0.5;
+    sub.y = h * 0.48;
+    sub.alpha = 0.55 + Math.sin(this.pulseTime * 3) * 0.2;
+    this.uiLayer.addChild(sub);
+
+    const scanText = new Text('// SCANNING FOR REWARD... //', new TextStyle({
+      fontFamily: 'Courier New', fontSize: 13, fill: 0x335566,
+    }));
+    scanText.anchor.set(0.5, 0.5);
+    scanText.x = w * 0.5;
+    scanText.y = h * 0.57;
+    scanText.alpha = 0.6;
+    this.uiLayer.addChild(scanText);
   }
 }
 
