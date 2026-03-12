@@ -1,5 +1,6 @@
 import { Application, Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { GlowFilter } from '@pixi/filter-glow';
+import { t, currentLang, setLanguage, type Lang } from '../i18n/index';
 
 export interface GameSettings {
   masterVolume: number;  // 0-100
@@ -48,7 +49,7 @@ interface SettingsHandlers {
 }
 
 const PANEL_W_MAX = 560;
-const PANEL_H_MAX = 560;
+const PANEL_H_MAX = 580;
 
 export class SettingsRenderer {
   private app: Application;
@@ -57,6 +58,7 @@ export class SettingsRenderer {
   private overlay: Graphics;
   private uiLayer: Container;
   private settings: GameSettings;
+  private langChangeCb: (() => void) | null = null;
 
   constructor(app: Application, handlers: SettingsHandlers) {
     this.app = app;
@@ -71,6 +73,13 @@ export class SettingsRenderer {
     this.rootContainer.addChild(this.uiLayer);
     this.app.stage.addChild(this.rootContainer);
     this.rootContainer.visible = false;
+
+    this.langChangeCb = () => {
+      if (this.rootContainer.visible) this.render();
+    };
+    try {
+      window.addEventListener('langchange', this.langChangeCb);
+    } catch { /* node env */ }
   }
 
   show(): void {
@@ -81,6 +90,12 @@ export class SettingsRenderer {
 
   hide(): void {
     this.rootContainer.visible = false;
+  }
+
+  destroy(): void {
+    if (this.langChangeCb) {
+      try { window.removeEventListener('langchange', this.langChangeCb); } catch { /* ignore */ }
+    }
   }
 
   render(): void {
@@ -110,7 +125,7 @@ export class SettingsRenderer {
     this.uiLayer.addChild(panel);
 
     // Title
-    const title = new Text('// SETTINGS //', new TextStyle({
+    const title = new Text(t('settings.title'), new TextStyle({
       fontFamily: 'Courier New',
       fontSize: 20,
       fill: 0xffaa00,
@@ -121,20 +136,23 @@ export class SettingsRenderer {
     title.y = py + 32;
     this.uiLayer.addChild(title);
 
+    // Language toggle (top-right of panel)
+    this.drawLangToggle(px + pw - 10, py + 14);
+
     let rowY = py + 68;
     const rowH = 52;
 
     // ---- Volume sliders ----
-    rowY = this.drawSlider('MASTER VOLUME', 'masterVolume', px + 20, rowY, pw - 40, rowH);
-    rowY = this.drawSlider('SFX VOLUME',    'sfxVolume',    px + 20, rowY, pw - 40, rowH);
-    rowY = this.drawSlider('MUSIC VOLUME',  'musicVolume',  px + 20, rowY, pw - 40, rowH);
+    rowY = this.drawSlider(t('settings.masterVolume'), 'masterVolume', px + 20, rowY, pw - 40, rowH);
+    rowY = this.drawSlider(t('settings.sfxVolume'),    'sfxVolume',    px + 20, rowY, pw - 40, rowH);
+    rowY = this.drawSlider(t('settings.musicVolume'),  'musicVolume',  px + 20, rowY, pw - 40, rowH);
 
     rowY += 8;
 
     // ---- Toggles ----
-    rowY = this.drawToggle('SCREEN SHAKE', 'screenShake', px + 20, rowY, pw - 40);
+    rowY = this.drawToggle(t('settings.screenShake'),     'screenShake',     px + 20, rowY, pw - 40);
     rowY += 8;
-    rowY = this.drawToggle('PARTICLE EFFECTS', 'particleEffects', px + 20, rowY, pw - 40);
+    rowY = this.drawToggle(t('settings.particleEffects'), 'particleEffects', px + 20, rowY, pw - 40);
 
     rowY += 16;
 
@@ -142,7 +160,7 @@ export class SettingsRenderer {
     this.drawKeybinds(px + 20, rowY, pw - 40);
 
     // ---- Close button ----
-    const btnW = 160;
+    const btnW = 180;
     const btnH = 46;
     const btnX = w * 0.5 - btnW * 0.5;
     const btnY = py + ph - 62;
@@ -165,13 +183,62 @@ export class SettingsRenderer {
     });
     this.uiLayer.addChild(closeBtn);
 
-    const closeLabel = new Text('[ SAVE & CLOSE ]', new TextStyle({
+    const closeLabel = new Text(t('settings.saveClose'), new TextStyle({
       fontFamily: 'Courier New', fontSize: 14, fill: 0x00ffcc, fontWeight: 'bold',
     }));
     closeLabel.anchor.set(0.5, 0.5);
     closeLabel.x = btnX + btnW * 0.5;
     closeLabel.y = btnY + btnH * 0.5;
     this.uiLayer.addChild(closeLabel);
+  }
+
+  // ---- Language toggle -------------------------------------------------------
+
+  private drawLangToggle(rightEdgeX: number, y: number): void {
+    const langs: Array<{ code: Lang; label: string }> = [
+      { code: 'en', label: 'EN' },
+      { code: 'zh', label: '中文' },
+    ];
+    const pillW = 44;
+    const pillH = 24;
+    const gap = 5;
+    const totalW = langs.length * pillW + (langs.length - 1) * gap;
+    let startX = rightEdgeX - totalW;
+
+    langs.forEach(({ code, label }) => {
+      const isActive = currentLang() === code;
+      const color = isActive ? 0x00ffcc : 0x334455;
+
+      const pill = new Graphics();
+      pill.beginFill(isActive ? 0x051a14 : 0x050a10, 0.9);
+      pill.lineStyle(2, color, isActive ? 1 : 0.5);
+      pill.drawRoundedRect(0, 0, pillW, pillH, pillH * 0.5);
+      pill.endFill();
+      pill.x = startX;
+      pill.y = y;
+      if (isActive) {
+        pill.filters = [new GlowFilter({ color: 0x00ffcc, distance: 8, outerStrength: 1.5, quality: 0.4 })];
+      }
+      pill.eventMode = 'static';
+      pill.cursor = 'pointer';
+      pill.on('pointerdown', () => { setLanguage(code); });
+      pill.on('pointerover', () => { if (!isActive) pill.alpha = 0.75; });
+      pill.on('pointerout', () => { pill.alpha = 1.0; });
+      this.uiLayer.addChild(pill);
+
+      const txt = new Text(label, new TextStyle({
+        fontFamily: 'Courier New',
+        fontSize: 11,
+        fill: isActive ? 0x00ffcc : 0x556677,
+        fontWeight: isActive ? 'bold' : 'normal',
+      }));
+      txt.anchor.set(0.5, 0.5);
+      txt.x = startX + pillW * 0.5;
+      txt.y = y + pillH * 0.5;
+      this.uiLayer.addChild(txt);
+
+      startX += pillW + gap;
+    });
   }
 
   // ---- Slider ----------------------------------------------------------------
@@ -196,7 +263,6 @@ export class SettingsRenderer {
     const trackW = w - 70;
     const trackH = 8;
 
-    // Track background
     const track = new Graphics();
     track.beginFill(0x0a1822);
     track.lineStyle(1, 0x224455, 0.8);
@@ -206,7 +272,6 @@ export class SettingsRenderer {
     track.y = trackY;
     this.uiLayer.addChild(track);
 
-    // Fill
     const fillW = (val / 100) * trackW;
     const fill = new Graphics();
     fill.beginFill(0x00ffcc, 0.85);
@@ -216,7 +281,6 @@ export class SettingsRenderer {
     fill.y = trackY;
     this.uiLayer.addChild(fill);
 
-    // Knob
     const knob = new Graphics();
     knob.beginFill(0x00ffcc);
     knob.drawCircle(0, 0, 9);
@@ -228,7 +292,6 @@ export class SettingsRenderer {
     knob.cursor = 'ew-resize';
     this.uiLayer.addChild(knob);
 
-    // Value text
     const valText = new Text(`${val}`, new TextStyle({
       fontFamily: 'Courier New', fontSize: 13, fill: 0x00ffcc, fontWeight: 'bold',
     }));
@@ -237,14 +300,12 @@ export class SettingsRenderer {
     valText.y = trackY + trackH * 0.5;
     this.uiLayer.addChild(valText);
 
-    // Drag interaction
     let dragging = false;
 
     const updateValue = (globalX: number): void => {
       const localX = globalX - x;
       const newVal = Math.max(0, Math.min(100, Math.round((localX / trackW) * 100)));
       (this.settings as unknown as Record<string, number>)[key] = newVal;
-      // Update visuals
       const fw = (newVal / 100) * trackW;
       fill.clear();
       fill.beginFill(0x00ffcc, 0.85);
@@ -314,7 +375,7 @@ export class SettingsRenderer {
     knob.y = y + th * 0.5;
     this.uiLayer.addChild(knob);
 
-    const stateText = new Text(this.settings[key] ? 'ON' : 'OFF', new TextStyle({
+    const stateText = new Text(this.settings[key] ? t('settings.on') : t('settings.off'), new TextStyle({
       fontFamily: 'Courier New', fontSize: 10, fill: color, fontWeight: 'bold',
     }));
     stateText.anchor.set(0.5, 0.5);
@@ -339,7 +400,7 @@ export class SettingsRenderer {
   // ---- Keybinds --------------------------------------------------------------
 
   private drawKeybinds(x: number, y: number, w: number): void {
-    const header = new Text('KEYBINDS', new TextStyle({
+    const header = new Text(t('settings.keybinds'), new TextStyle({
       fontFamily: 'Courier New', fontSize: 11, fill: 0x556677,
     }));
     header.x = x;
@@ -347,9 +408,9 @@ export class SettingsRenderer {
     this.uiLayer.addChild(header);
 
     const binds: [string, string][] = [
-      ['1 - 5', 'PLAY CARD'],
-      ['E', 'END TURN'],
-      ['ESC', 'PAUSE MENU'],
+      ['1 - 5', t('settings.playCard')],
+      ['E',     t('settings.endTurn')],
+      ['ESC',   t('settings.pauseMenu')],
     ];
 
     const colW = (w - 20) / 3;

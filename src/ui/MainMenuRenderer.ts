@@ -1,5 +1,6 @@
 import { Application, Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { GlowFilter } from '@pixi/filter-glow';
+import { t, currentLang, setLanguage, type Lang } from '../i18n/index';
 
 export interface MainMenuHandlers {
   onNewRun: () => void;
@@ -10,7 +11,7 @@ export interface MainMenuHandlers {
   hasSave: () => boolean;
 }
 
-const VERSION = 'v0.6.0';
+const VERSION = 'v0.9.0';
 const GLITCH_CHARS = '!@#$%^&*<>?/|\\01アイウエオカキクケコ░▒▓█';
 const MATRIX_COLS = 40;
 
@@ -37,6 +38,7 @@ export class MainMenuRenderer {
   private readonly tagline = 'HACK. SURVIVE. REPEAT.';
   private taglineText: Text | null = null;
   private tickerCb: ((delta: number) => void) | null = null;
+  private langChangeCb: (() => void) | null = null;
 
   constructor(app: Application, handlers: MainMenuHandlers) {
     this.app = app;
@@ -62,6 +64,14 @@ export class MainMenuRenderer {
       this.updateTypewriter();
     };
     this.app.ticker.add(this.tickerCb);
+
+    // Re-render when language changes
+    this.langChangeCb = () => {
+      if (this.rootContainer.visible) this.render();
+    };
+    try {
+      window.addEventListener('langchange', this.langChangeCb);
+    } catch { /* node env */ }
   }
 
   show(): void {
@@ -72,6 +82,13 @@ export class MainMenuRenderer {
 
   hide(): void {
     this.rootContainer.visible = false;
+  }
+
+  destroy(): void {
+    if (this.tickerCb) this.app.ticker.remove(this.tickerCb);
+    if (this.langChangeCb) {
+      try { window.removeEventListener('langchange', this.langChangeCb); } catch { /* ignore */ }
+    }
   }
 
   render(): void {
@@ -87,6 +104,7 @@ export class MainMenuRenderer {
     this.drawTagline(w, h);
     this.drawButtons(w, h);
     this.drawVersion(w, h);
+    this.drawLangToggle(w, h);
   }
 
   // ---- Private ---------------------------------------------------------------
@@ -129,7 +147,6 @@ export class MainMenuRenderer {
         continue;
       }
 
-      // Randomise leading char occasionally
       if (Math.random() < 0.05) {
         col.char = GLITCH_CHARS[Math.floor(Math.random() * GLITCH_CHARS.length)];
       }
@@ -153,7 +170,6 @@ export class MainMenuRenderer {
 
   private updateTypewriter(): void {
     if (!this.taglineText) return;
-    // Advance one char every ~3 frames
     const target = Math.floor(this.time * 8);
     this.typewriterIdx = Math.min(target, this.tagline.length);
     this.taglineText.text = this.tagline.slice(0, this.typewriterIdx) +
@@ -165,13 +181,10 @@ export class MainMenuRenderer {
     this.bgLayer.drawRect(0, 0, w, h);
     this.bgLayer.endFill();
 
-    // Dark vignette overlay (drawn after matrix so it dims the matrix)
     const vignette = new Graphics();
-    // Center bright, edges dark
     vignette.beginFill(0x000000, 0);
     vignette.drawRect(0, 0, w, h);
     vignette.endFill();
-    // We'll use simple darkening at edges via opacity rect
     vignette.beginFill(0x020810, 0.55);
     vignette.drawRect(0, 0, w, h);
     vignette.endFill();
@@ -191,7 +204,6 @@ export class MainMenuRenderer {
       letterSpacing: 8,
     });
 
-    // Chromatic aberration: draw text 3 times at offsets R/G/B
     const red = new Text('CYBERDECK', style(0xff2244));
     red.anchor.set(0.5, 0.5);
     red.x = cx - 4;
@@ -213,7 +225,6 @@ export class MainMenuRenderer {
     main.filters = [new GlowFilter({ color: 0x00ffcc, distance: 28, outerStrength: 3, quality: 0.5 })];
     this.uiLayer.addChild(main);
 
-    // Subtitle line
     const sub = new Text('// NEURAL COMBAT SYSTEM //', new TextStyle({
       fontFamily: 'Courier New',
       fontSize: 13,
@@ -252,10 +263,10 @@ export class MainMenuRenderer {
     const hasSave = this.handlers.hasSave();
 
     const buttons: Array<{ label: string; active: boolean; cb: () => void; color: number }> = [
-      { label: '[ NEW RUN ]',     active: true,    cb: () => this.handlers.onNewRun(),           color: 0x00ffcc },
-      { label: '[ DAILY HACK ]',  active: true,    cb: () => this.handlers.onDailyChallenge(),   color: 0xff6600 },
-      { label: '[ CONTINUE ]',    active: hasSave, cb: () => this.handlers.onContinue(),         color: 0x00ffcc },
-      { label: '[ SETTINGS ]',    active: true,    cb: () => this.handlers.onSettings(),          color: 0xffaa00 },
+      { label: t('menu.newRun'),    active: true,    cb: () => this.handlers.onNewRun(),         color: 0x00ffcc },
+      { label: t('menu.dailyHack'), active: true,    cb: () => this.handlers.onDailyChallenge(), color: 0xff6600 },
+      { label: t('menu.continue'),  active: hasSave, cb: () => this.handlers.onContinue(),       color: 0x00ffcc },
+      { label: t('menu.settings'),  active: true,    cb: () => this.handlers.onSettings(),        color: 0xffaa00 },
     ];
 
     buttons.forEach((btn, i) => {
@@ -313,5 +324,55 @@ export class MainMenuRenderer {
     ver.x = w - 14;
     ver.y = h - 10;
     this.uiLayer.addChild(ver);
+  }
+
+  private drawLangToggle(w: number, _h: number): void {
+    const langs: Array<{ code: Lang; label: string }> = [
+      { code: 'en', label: 'EN' },
+      { code: 'zh', label: '中文' },
+    ];
+    const pillW = 44;
+    const pillH = 26;
+    const gap = 6;
+    const totalW = langs.length * pillW + (langs.length - 1) * gap;
+    let startX = w - totalW - 14;
+    const y = 14;
+
+    langs.forEach(({ code, label }) => {
+      const isActive = currentLang() === code;
+      const color = isActive ? 0x00ffcc : 0x334455;
+
+      const pill = new Graphics();
+      pill.beginFill(isActive ? 0x051a14 : 0x050a10, 0.9);
+      pill.lineStyle(2, color, isActive ? 1 : 0.5);
+      pill.drawRoundedRect(0, 0, pillW, pillH, pillH * 0.5);
+      pill.endFill();
+      pill.x = startX;
+      pill.y = y;
+      if (isActive) {
+        pill.filters = [new GlowFilter({ color: 0x00ffcc, distance: 8, outerStrength: 1.5, quality: 0.4 })];
+      }
+      pill.eventMode = 'static';
+      pill.cursor = 'pointer';
+      pill.on('pointerdown', () => {
+        setLanguage(code);
+      });
+      pill.on('pointerover', () => { if (!isActive) pill.alpha = 0.75; });
+      pill.on('pointerout', () => { pill.alpha = 1.0; });
+      this.uiLayer.addChild(pill);
+
+      const txt = new Text(label, new TextStyle({
+        fontFamily: 'Courier New',
+        fontSize: 11,
+        fill: isActive ? 0x00ffcc : 0x556677,
+        fontWeight: isActive ? 'bold' : 'normal',
+      }));
+      txt.anchor.set(0.5, 0.5);
+      txt.x = startX + pillW * 0.5;
+      txt.y = y + pillH * 0.5;
+      this.uiLayer.addChild(txt);
+
+      startX += pillW + gap;
+    });
   }
 }

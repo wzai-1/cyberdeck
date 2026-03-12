@@ -5,6 +5,7 @@ import { BOSS_TYPES } from '../game/enemies';
 import { getRelicById } from '../game/relics';
 import { getMostUsedCard, getRunDuration } from '../game/runStats';
 import { createEnemySprite, type AnimatedEnemySprite } from './sprites/EnemySprites';
+import { t } from '../i18n/index';
 
 // ---- Types -----------------------------------------------------------------
 
@@ -94,6 +95,15 @@ export class GameRenderer {
       this.updateChargeEffect();
       this.updateEnemySprite();
     });
+
+    // Re-render on language change
+    try {
+      window.addEventListener('langchange', () => {
+        if (this.rootContainer.visible && this.lastState) {
+          this.render(this.lastState);
+        }
+      });
+    } catch { /* node env */ }
   }
 
   show(): void { this.rootContainer.visible = true; }
@@ -320,9 +330,10 @@ export class GameRenderer {
       : isBoss ? 0xff0044
       : 0xff3366;
 
-    const displayName = state.enemy.type.replace(/_/g, ' ');
-    const nameSuffix = isBoss ? ' [BOSS]'
-      : ['ELITE_FIREWALL', 'ELITE_AI', 'ELITE_WORM'].includes(state.enemy.type) ? ' [ELITE]'
+    const enemyKey = `enemy.${state.enemy.type.toLowerCase()}`;
+    const displayName = t(enemyKey) !== enemyKey ? t(enemyKey) : state.enemy.type.replace(/_/g, ' ');
+    const nameSuffix = isBoss ? ` ${t('ui.boss')}`
+      : ['ELITE_FIREWALL', 'ELITE_AI', 'ELITE_WORM'].includes(state.enemy.type) ? ` ${t('ui.elite')}`
       : '';
 
     const nameText = new Text(`${displayName}${nameSuffix}`, new TextStyle({
@@ -369,9 +380,9 @@ export class GameRenderer {
     const intentConfig: Record<string, { color: number; icon: string; label: string }> = {
       attack:  { color: 0xff2222, icon: '⚔',  label: `${intentValue}` },
       defend:  { color: 0x2266ff, icon: '◈',  label: `${intentValue}` },
-      charge:  { color: 0xff9900, icon: '⚡', label: 'CHARGING' },
-      debuff:  { color: 0xaa44ff, icon: '↓',  label: 'DEBUFF' },
-      steal:   { color: 0xffaa00, icon: '◆',  label: 'STEAL' },
+      charge:  { color: 0xff9900, icon: '⚡', label: t('combat.intent.charging') },
+      debuff:  { color: 0xaa44ff, icon: '↓',  label: t('combat.intent.debuff') },
+      steal:   { color: 0xffaa00, icon: '◆',  label: t('combat.intent.steal') },
     };
 
     const cfg = intentConfig[intent] ?? { color: 0x888888, icon: '?', label: '?' };
@@ -418,7 +429,7 @@ export class GameRenderer {
     this.uiLayer.addChild(valText);
 
     // Small INTENT label above box
-    const labelText = new Text('NEXT ACTION', new TextStyle({
+    const labelText = new Text(t('ui.nextAction'), new TextStyle({
       fontFamily: 'Courier New', fontSize: 9, fill: color,
     }));
     labelText.alpha = 0.6;
@@ -468,7 +479,7 @@ export class GameRenderer {
 
     // Ghost: invisible indicator
     if (state.combatInvisible) {
-      const invisText = new Text('INVISIBLE', new TextStyle({
+      const invisText = new Text(t('ui.invisible'), new TextStyle({
         fontFamily: 'Courier New', fontSize: 8, fill: 0xaa44ff,
       }));
       invisText.anchor.set(0.5, 0);
@@ -480,7 +491,7 @@ export class GameRenderer {
 
     // HP section
     const hpX = 120;
-    const hpLabelText = new Text('HP', new TextStyle({
+    const hpLabelText = new Text(t('ui.hp'), new TextStyle({
       fontFamily: 'Courier New', fontSize: 11, fill: playerColor,
     }));
     hpLabelText.anchor.set(0, 0.5);
@@ -522,7 +533,7 @@ export class GameRenderer {
 
     // Turn counter
     const turnX = manaStartX + Math.max(4, state.player.maxMana) * 26 + 20;
-    const turnText = new Text(`TURN\n${state.turn}`, new TextStyle({
+    const turnText = new Text(`${t('ui.turn')}\n${state.turn}`, new TextStyle({
       fontFamily: 'Courier New', fontSize: 12, fill: 0x335566, align: 'center',
     }));
     turnText.anchor.set(0.5, 0.5);
@@ -533,7 +544,7 @@ export class GameRenderer {
     // Floor indicator
     if (state.mapState) {
       const floor = state.mapState.currentFloor + 1;
-      const floorText = new Text(`FLOOR\n${floor}/5`, new TextStyle({
+      const floorText = new Text(`${t('ui.floor')}\n${floor}/5`, new TextStyle({
         fontFamily: 'Courier New', fontSize: 12, fill: 0x445566, align: 'center',
       }));
       floorText.anchor.set(0.5, 0.5);
@@ -565,7 +576,7 @@ export class GameRenderer {
 
   /** Mana as individual diamond icons ◆ filled / ◇ empty */
   private drawManaDiamonds(mana: number, maxMana: number, startX: number, cy: number): void {
-    const label = new Text('MANA', new TextStyle({
+    const label = new Text(t('ui.mana'), new TextStyle({
       fontFamily: 'Courier New', fontSize: 10, fill: 0xffaa00,
     }));
     label.anchor.set(0, 0.5);
@@ -715,7 +726,7 @@ export class GameRenderer {
       btn.on('pointerout', () => btn.scale.set(1.0));
     }
 
-    const label = new Text('END TURN ▶', new TextStyle({
+    const label = new Text(t('ui.endTurn'), new TextStyle({
       fontFamily: 'Courier New', fontSize: 16, fill: color, fontWeight: 'bold',
     }));
     label.anchor.set(0.5, 0.5);
@@ -797,7 +808,7 @@ export class GameRenderer {
 
   private renderEndScreen(state: GameState, w: number, h: number): void {
     const isWin = state.phase === 'win';
-    const title = isWin ? 'RUN COMPLETE' : 'SYSTEM FAILURE';
+    const title = isWin ? t('combat.youWin') : t('combat.youLose');
     const color = isWin ? 0x00ffcc : 0xff0066;
 
     if (isWin) {
@@ -819,7 +830,7 @@ export class GameRenderer {
     titleText.filters = [new GlowFilter({ color, distance: 22, outerStrength: 3, quality: 0.5 })];
     this.uiLayer.addChild(titleText);
 
-    const sub = new Text(isWin ? 'NEURAL NETWORK COMPROMISED' : 'CONNECTION TERMINATED', new TextStyle({
+    const sub = new Text(isWin ? t('combat.winSub') : t('combat.loseSub'), new TextStyle({
       fontFamily: 'Courier New', fontSize: 13, fill: color,
     }));
     sub.alpha = 0.65;
@@ -834,15 +845,15 @@ export class GameRenderer {
     const duration = getRunDuration(stats);
 
     const statLines = [
-      `FLOORS CLEARED   ${stats.floorsCleared}`,
-      `ENEMIES DEFEATED ${stats.enemiesDefeated}`,
-      `CARDS PLAYED     ${stats.cardsPlayed}`,
-      `DAMAGE DEALT     ${stats.damageDealt}`,
-      `DAMAGE TAKEN     ${stats.damageTaken}`,
-      `BEST HIT         ${stats.bestHit}`,
-      `MOST USED CARD   ${mostUsed}`,
-      `GOLD EARNED      ${stats.goldEarned}`,
-      `RUN TIME         ${duration}`,
+      `${t('stats.floorsCleared').padEnd(17)} ${stats.floorsCleared}`,
+      `${t('stats.enemiesDefeated').padEnd(17)} ${stats.enemiesDefeated}`,
+      `${t('stats.cardsPlayed').padEnd(17)} ${stats.cardsPlayed}`,
+      `${t('stats.damageDealt').padEnd(17)} ${stats.damageDealt}`,
+      `${t('stats.damageTaken').padEnd(17)} ${stats.damageTaken}`,
+      `${t('stats.bestHit').padEnd(17)} ${stats.bestHit}`,
+      `${t('stats.mostUsed').padEnd(17)} ${mostUsed}`,
+      `${t('stats.goldEarned').padEnd(17)} ${stats.goldEarned}`,
+      `${t('stats.runTime').padEnd(17)} ${duration}`,
     ];
 
     const panelW = Math.min(w * 0.55, 380);
@@ -857,7 +868,7 @@ export class GameRenderer {
     panel.endFill();
     this.uiLayer.addChild(panel);
 
-    const panelTitle = new Text('[ RUN STATISTICS ]', new TextStyle({
+    const panelTitle = new Text(t('combat.runStats'), new TextStyle({
       fontFamily: 'Courier New', fontSize: 11, fill: color,
     }));
     panelTitle.alpha = 0.5;
@@ -889,7 +900,7 @@ export class GameRenderer {
     btn.on('pointerover', () => btn.scale.set(1.05));
     btn.on('pointerout', () => btn.scale.set(1.0));
 
-    const label = new Text('[ NEW RUN ]', new TextStyle({
+    const label = new Text(t('combat.playAgain'), new TextStyle({
       fontFamily: 'Courier New', fontSize: 18, fill: color, fontWeight: 'bold',
     }));
     label.anchor.set(0.5, 0.5);
@@ -907,7 +918,7 @@ export class GameRenderer {
     overlay.endFill();
     this.uiLayer.addChild(overlay);
 
-    const title = new Text('CHOOSE UPGRADE', new TextStyle({
+    const title = new Text(t('combat.chooseCard'), new TextStyle({
       fontFamily: 'Courier New', fontSize: 28, fill: 0x00ffcc, fontWeight: 'bold',
     }));
     title.anchor.set(0.5, 0.5);
@@ -948,7 +959,7 @@ export class GameRenderer {
     skipBtn.on('pointerout', () => { skipBtn.alpha = 1.0; });
     this.uiLayer.addChild(skipBtn);
 
-    const skipLabel = new Text('[ SKIP ]', new TextStyle({
+    const skipLabel = new Text(t('ui.skip'), new TextStyle({
       fontFamily: 'Courier New', fontSize: 14, fill: 0x556677,
     }));
     skipLabel.anchor.set(0.5, 0.5);
@@ -1126,7 +1137,7 @@ export class GameRenderer {
     }
 
     if (card.exhaust) {
-      const exhaustText = new Text('EXHAUST', new TextStyle({
+      const exhaustText = new Text(t('ui.exhaust'), new TextStyle({
         fontFamily: 'Courier New', fontSize: 9, fill: 0xff4444,
       }));
       exhaustText.alpha = 0.8;
