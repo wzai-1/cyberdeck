@@ -346,6 +346,7 @@ window.addEventListener('keydown', (e) => {
       if (state.player.mana >= card.cost || state.zeroCostTurn) {
         audio.resume();
         audio.cardPlay();
+        gameRenderer.playDamageEffect(card.name);
         state = playCard(state, card.id);
         checkCombatWin();
         gameRenderer.render(state);
@@ -740,6 +741,8 @@ const gameRenderer = new GameRenderer(app, {
     audio.cardPlay();
 
     gameRenderer.animateCardPlay(card, position, () => {
+      // Trigger typed damage effect
+      gameRenderer.playDamageEffect(card.name);
       state = playCard(state, cardId);
       checkCombatWin();
       gameRenderer.render(state);

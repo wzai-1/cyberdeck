@@ -6,8 +6,9 @@ import { getRelicById } from '../game/relics';
 import { getMostUsedCard, getRunDuration } from '../game/runStats';
 import {
   createEnemySprite, createPlayerSprite, preloadSprites,
-  type AnimatedEnemySprite,
+  type AnimatedEnemySprite, type AnimatedPlayerSprite,
 } from './sprites/KenneySprites';
+import { DamageEffectSystem, getCardEffect, preloadParticles } from './DamageEffects';
 import { t } from '../i18n/index';
 
 // ---- Types -----------------------------------------------------------------
@@ -56,6 +57,13 @@ export class GameRenderer {
   private lastEnemyType = '';
   private lastBossPhase = 0;
 
+  // Persistent player sprite
+  private playerSprite: AnimatedPlayerSprite | null = null;
+  private lastPlayerClass = '';
+
+  // Damage effect system
+  private damageEffects: DamageEffectSystem;
+
   // Enemy lurch animation offset
   private _enemyLurchOffset = 0;
 
@@ -89,8 +97,12 @@ export class GameRenderer {
     this.app.stage.addChild(this.effectsLayer);
     this.effectsLayer.visible = false;
 
-    // Kick off Kenney sprite preload (non-blocking)
+    // Damage effect system
+    this.damageEffects = new DamageEffectSystem(this.app, this.effectsLayer);
+
+    // Kick off Kenney sprite + particle preload (non-blocking)
     preloadSprites().catch(() => { /* graceful degradation */ });
+    preloadParticles().catch(() => { /* graceful degradation */ });
 
     // Ticker: run animations + sprite updates
     this.app.ticker.add((delta) => {
@@ -100,6 +112,7 @@ export class GameRenderer {
       this.idleTime += dt;
       this.updateAnimations(dt);
       this.updateEnemySprite();
+      this.updatePlayerSprite();
       this.updateVignette(dt);
     });
 
@@ -145,8 +158,9 @@ export class GameRenderer {
     }
     this.lastState = state;
 
-    // Sync enemy sprite visibility / type
+    // Sync enemy + player sprite visibility / type
     this.syncEnemySprite(state);
+    this.syncPlayerSprite(state);
 
     // Rebuild HTML
     this.div.innerHTML = '';
@@ -557,10 +571,14 @@ export class GameRenderer {
     const btn = document.createElement('button');
     btn.id = 'end-turn-btn';
     const isPlayerTurn = state.phase === 'player_turn';
-    btn.textContent = isPlayerTurn ? `${t('ui.endTurn')} [E]` : t('ui.enemyThinking') ?? 'ENEMY TURN...';
-    btn.disabled = !isPlayerTurn;
     if (isPlayerTurn) {
+      btn.textContent = `${t('ui.endTurn')} [E]`;
       btn.addEventListener('click', () => this.handlers.onEndTurn());
+    } else {
+      btn.textContent = 'WAIT...';
+      btn.disabled = true;
+      btn.style.pointerEvents = 'none';
+      btn.style.opacity = '0.5';
     }
     this.div.appendChild(btn);
   }
@@ -788,22 +806,64 @@ export class GameRenderer {
     const w = this.app.screen.width;
     const h = this.app.screen.height;
     const isBoss = BOSS_TYPES.includes(this.lastState.enemy.type);
-    const baseY = isBoss ? h * 0.24 : h * 0.22;
+    const baseY = isBoss ? h * 0.34 : h * 0.32;
     const bobOffset = Math.sin(this.idleTime * 1.8 + 1.5) * 2;
 
-    this.enemySprite.container.x = w * 0.5 + this._enemyLurchOffset;
+    this.enemySprite.container.x = w * 0.65 + this._enemyLurchOffset;
     this.enemySprite.container.y = baseY + bobOffset;
     this.enemySprite.update(this.idleTime, this.lastState.bossPhase);
+  }
+
+  // ---- Player sprite sync --------------------------------------------------
+
+  private syncPlayerSprite(state: GameState): void {
+    if (state.phase === 'win' || state.phase === 'lose' || state.phase === 'card_reward') {
+      // Show player on victory/defeat with appropriate pose
+      if (this.playerSprite) {
+        this.playerSprite.container.visible = true;
+        if (state.phase === 'win' || state.phase === 'card_reward') {
+          this.playerSprite.setPose('cheer0');
+        } else if (state.phase === 'lose') {
+          this.playerSprite.setPose('fallDown');
+        }
+      }
+    }
+
+    if (state.playerClass !== this.lastPlayerClass) {
+      if (this.playerSprite) {
+        this.effectsLayer.removeChild(this.playerSprite.container);
+        this.playerSprite.container.destroy({ children: true });
+        this.playerSprite = null;
+      }
+      this.playerSprite = createPlayerSprite(state.playerClass);
+      this.effectsLayer.addChild(this.playerSprite.container);
+      this.lastPlayerClass = state.playerClass;
+    }
+
+    if (this.playerSprite) this.playerSprite.container.visible = true;
+  }
+
+  private updatePlayerSprite(): void {
+    if (!this.playerSprite || !this.lastState) return;
+
+    const w = this.app.screen.width;
+    const h = this.app.screen.height;
+    const baseY = h * 0.45;
+    const bobOffset = Math.sin(this.idleTime * Math.PI) * 4;
+
+    this.playerSprite.container.x = w * 0.2;
+    this.playerSprite.container.y = baseY + bobOffset;
+    this.playerSprite.update(this.idleTime);
   }
 
   // ---- Effects / Animations ------------------------------------------------
 
   private handleStateTransitions(prev: GameState, next: GameState, w: number, h: number): void {
     const isBoss = BOSS_TYPES.includes(next.enemy.type);
-    const ex = w * 0.5;
-    const ey = isBoss ? h * 0.24 : h * 0.22;
-    const px = 70;
-    const py = h * 0.50 + 45;
+    const ex = w * 0.65;
+    const ey = isBoss ? h * 0.34 : h * 0.32;
+    const px = w * 0.2;
+    const py = h * 0.45;
 
     // Boss phase transition
     if (next.bossPhase > prev.bossPhase) {
@@ -813,50 +873,69 @@ export class GameRenderer {
     // Enemy took damage
     if (next.enemy.hp < prev.enemy.hp) {
       const amount = prev.enemy.hp - next.enemy.hp;
-      this.spawnFloatNumber(ex, ey - 80, amount, 0xff2244, '-');
+      this.spawnFloatNumber(ex, ey - 100, amount, 0xff2244, '-');
       this.flashTarget(ex, ey, 0xff0000, 100, 80);
       if (amount > 10) this.screenShake(9, 0.3);
+      // Enemy hurt pose
+      if (this.enemySprite) this.enemySprite.setPose('hurt', 200);
     }
 
     // Enemy shield reduced
     if (next.enemy.shield < prev.enemy.shield && next.enemy.hp === prev.enemy.hp) {
       const blocked = prev.enemy.shield - next.enemy.shield;
-      this.spawnFloatNumber(ex + 35, ey - 60, blocked, 0x4488ff, '-');
+      this.spawnFloatNumber(ex + 35, ey - 80, blocked, 0x4488ff, '🛡-');
     }
 
     // Player took damage
     if (next.player.hp < prev.player.hp) {
       const amount = prev.player.hp - next.player.hp;
-      this.spawnFloatNumber(px, py - 60, amount, 0xff4466, '-');
+      this.spawnFloatNumber(px, py - 80, amount, 0xff4466, '-');
       this.flashTarget(px, py, 0x880022, 90, 60);
       if (amount > 10) this.screenShake(7, 0.25);
       this.lurchEnemy(50);
       this._vignetteAlpha = Math.min(1, this._vignetteAlpha + 0.65);
+      // Player hurt pose, enemy attack pose
+      if (this.playerSprite) this.playerSprite.setPose('hurt', 200);
+      if (this.enemySprite) this.enemySprite.setPose('attack2', 300);
     }
 
     // Player healed
     if (next.player.hp > prev.player.hp) {
       const healed = next.player.hp - prev.player.hp;
-      this.spawnFloatNumber(px, py - 60, healed, 0x00ff88, '+');
+      this.spawnFloatNumber(px, py - 80, healed, 0x00ff88, '+');
     }
 
     // Player gained shield
     if (next.player.shield > prev.player.shield) {
       const gained = next.player.shield - prev.player.shield;
-      this.spawnFloatNumber(px + 30, py - 45, gained, 0x66ddff, '+');
+      this.spawnFloatNumber(px + 30, py - 65, gained, 0x66ddff, '🛡+');
     }
 
-    // Turn change flash text
+    // Turn change flash text — YOUR TURN flies in from left
     if (next.phase === 'player_turn' && prev.phase === 'enemy_turn') {
-      this.spawnTurnText('YOUR TURN', 0x00ffcc, w, h);
+      this.spawnYourTurnText(w, h);
     }
     if (next.phase === 'enemy_turn' && prev.phase === 'player_turn') {
       this.spawnTurnText('ENEMY TURN', 0xff2222, w, h);
     }
 
+    // Enemy death: fade out sprite
+    if (next.enemy.hp <= 0 && prev.enemy.hp > 0) {
+      if (this.enemySprite) {
+        this.enemySprite.setPose('fallDown');
+        this.fadeOutEnemySprite();
+      }
+    }
+
     // Victory particles
     if (next.phase === 'card_reward' && prev.phase !== 'card_reward') {
       this.spawnVictoryParticles(w * 0.5, h * 0.4);
+      if (this.playerSprite) this.playerSprite.setPose('cheer0');
+    }
+
+    // Defeat
+    if (next.phase === 'lose' && prev.phase !== 'lose') {
+      if (this.playerSprite) this.playerSprite.setPose('fallDown');
     }
   }
 
@@ -1010,6 +1089,75 @@ export class GameRenderer {
     }
   }
 
+  /** Fade out enemy sprite over 0.8s on death */
+  private fadeOutEnemySprite(): void {
+    if (!this.enemySprite) return;
+    const sprite = this.enemySprite;
+    this.addAnimation(0.8, (p) => {
+      sprite.container.alpha = 1 - p;
+    });
+  }
+
+  /** YOUR TURN text flies in from left */
+  private spawnYourTurnText(w: number, h: number): void {
+    const text = new Text('YOUR TURN', new TextStyle({
+      fontFamily: 'Courier New', fontSize: 36, fill: 0x00ffcc, fontWeight: 'bold',
+    }));
+    text.anchor.set(0.5, 0.5);
+    text.x = -200;
+    text.y = h * 0.5;
+    text.filters = [new GlowFilter({ color: 0x00ffcc, distance: 24, outerStrength: 3, quality: 0.5 })];
+    this.effectsLayer.addChild(text);
+    this.addAnimation(1.2, (p) => {
+      // Fly in from left to center, then fade
+      if (p < 0.3) {
+        const t = p / 0.3;
+        text.x = -200 + (w * 0.5 + 200) * easeOutCubic(t);
+      } else {
+        text.x = w * 0.5;
+      }
+      text.alpha = p > 0.65 ? 1 - (p - 0.65) / 0.35 : 1;
+      text.scale.set(0.8 + p * 0.4);
+    }, () => {
+      this.effectsLayer.removeChild(text);
+      text.destroy({ children: true });
+    });
+  }
+
+  // ---- Public API for damage effects ---------------------------------------
+
+  /** Play a typed damage effect between player and enemy positions */
+  playDamageEffect(cardName: string): void {
+    const type = getCardEffect(cardName);
+    if (type === 'none') return;
+
+    const w = this.app.screen.width;
+    const h = this.app.screen.height;
+    const isBoss = this.lastState ? BOSS_TYPES.includes(this.lastState.enemy.type) : false;
+    const px = w * 0.2;
+    const py = h * 0.45 - 80; // above feet
+    const ex = w * 0.65;
+    const ey = (isBoss ? h * 0.34 : h * 0.32) - 80;
+
+    this.damageEffects.play(type, px, py, ex, ey);
+
+    // Trigger player attack pose
+    if (this.playerSprite) this.playerSprite.setPose('attack1', 300);
+  }
+
+  /** Get player/enemy pixel positions for external use */
+  getPositions(): { px: number; py: number; ex: number; ey: number } {
+    const w = this.app.screen.width;
+    const h = this.app.screen.height;
+    const isBoss = this.lastState ? BOSS_TYPES.includes(this.lastState.enemy.type) : false;
+    return {
+      px: w * 0.2,
+      py: h * 0.45 - 80,
+      ex: w * 0.65,
+      ey: (isBoss ? h * 0.34 : h * 0.32) - 80,
+    };
+  }
+
   private updateVignette(dt: number): void {
     if (this._vignetteAlpha <= 0) {
       if (this._vignetteG) {
@@ -1110,6 +1258,3 @@ export class GameRenderer {
 function easeOutCubic(p: number): number {
   return 1 - Math.pow(1 - p, 3);
 }
-
-// Suppress unused import warning for createPlayerSprite (available for future use)
-void createPlayerSprite;
